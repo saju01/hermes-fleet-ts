@@ -1,4 +1,10 @@
-# Hermes Fleet
+# Hermes Fleet TS
+
+A fork of [AIowa-LLC/Hermes Fleet](https://github.com/AIowa-LLC/hermes-fleet), extended with **app-owned embedded Tailscale** using the official **libtailscale / TailscaleKit** SDK.
+
+The TS integration routes gateway HTTP and WebSocket traffic through the embedded node's authenticated SOCKS proxy. It is not a wrapper around the separate Tailscale app or a device-wide VPN. The integration is being prepared for this fork; build, runtime validation, and TestFlight delivery are separate gates.
+
+Original Hermes Fleet attribution and the MIT license are retained. Tailscale SDK and dependency licenses apply separately. The upstream project overview follows.
 
 Hermes Fleet is a native iPhone control plane for user-owned Hermes Agent deployments. It connects directly to gateways selected by the user so fleet state, conversations, controls, and credentials stay between the phone and the user's Hermes infrastructure.
 
