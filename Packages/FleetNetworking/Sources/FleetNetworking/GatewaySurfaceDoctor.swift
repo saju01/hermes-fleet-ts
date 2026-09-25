@@ -40,7 +40,7 @@ public enum GatewaySurfaceDoctor {
 
     /// Probe `{base}/health`. Never throws — every failure path returns
     /// `.unknown` so the caller's existing classification is untouched.
-    public static func probe(baseURL: URL, urlSession: URLSession = .shared) async -> Finding {
+    public static func probe(baseURL: URL, urlSession: any GatewayHTTPClient = URLSession.shared) async -> Finding {
         var request = URLRequest(url: baseURL.appendingPathComponent("health"))
         request.httpMethod = "GET"
         request.timeoutInterval = min(request.timeoutInterval, timeoutSeconds)

@@ -34,7 +34,7 @@ public actor KanbanEventStreamClient: KanbanBoardWatching, GatewaySessionDisconn
     private let authenticator: any AuthenticationProviding
     /// HTTP credential resolution for the board fetch, per auth strategy.
     private let httpCredential: @Sendable () async throws -> HTTPCredential
-    private let urlSession: URLSession
+    private let urlSession: any GatewayHTTPClient
     /// WebSocket session factory — the SAME pinning-aware seam the transport
     /// uses (`URLSessionWebSocketSessionFactory(trustHandler:)` in
     /// production), so kanban sockets enforce the gateway's TOFU pin too.
@@ -70,7 +70,7 @@ public actor KanbanEventStreamClient: KanbanBoardWatching, GatewaySessionDisconn
         baseURL: URL,
         authenticator: any AuthenticationProviding,
         httpCredential: @escaping @Sendable () async throws -> HTTPCredential = { .none },
-        urlSession: URLSession = .shared,
+        urlSession: any GatewayHTTPClient = URLSession.shared,
         sessionFactory: any WebSocketSessionFactory = URLSessionWebSocketSessionFactory(),
         reconnectDelay: (base: Double, cap: Double) = (base: 1.0, cap: 15.0)
     ) {

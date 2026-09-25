@@ -1,0 +1,11 @@
+diff --git a/tailscale.go b/tailscale.go
+--- a/tailscale.go
++++ b/tailscale.go
+@@ -520,6 +520,7 @@ func TsnetSetLogFD(sd, fd C.int) C.int {
+ 	}
+ 	if fd == -1 {
+ 		s.s.Logf = logger.Discard
++		s.s.UserLogf = logger.Discard
+ 		return 0
+ 	}
+ 	f := os.NewFile(uintptr(fd), "logfd")

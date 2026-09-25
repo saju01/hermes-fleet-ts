@@ -1,0 +1,2 @@
+# Unified diff context prefixes are data, not source indentation.
+scripts/tailscale-private-logging.patch -whitespace

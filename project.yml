@@ -34,11 +34,18 @@ targets:
   HermesFleetApp:
     type: application
     platform: iOS
+    preBuildScripts:
+      - name: Verify private Tailscale SDK
+        script: bash "$SRCROOT/scripts/tailscale-sdk.sh" install "$SRCROOT/Vendor/TailscaleKit.xcframework"
+        basedOnDependencyAnalysis: false
     sources:
       - HermesFleetApp
     resources:
       - HermesFleetApp/PrivacyInfo.xcprivacy
     dependencies:
+      - framework: Vendor/TailscaleKit.xcframework
+        embed: true
+        codeSign: true
       - package: FleetCore
       - package: FleetNetworking
       - package: FleetSecurity

@@ -20,6 +20,7 @@ enum FleetServiceGraph {
     /// One process-wide owner for ephemeral username/password sessions. The
     /// cookie never leaves this actor and is never persisted.
     nonisolated static let sharedSessionStore = GatewaySessionStore()
+    nonisolated static let embeddedTailnet = EmbeddedNodeController(driver: TailscaleKitDriver())
 
     static func makeDefaultEnvironment() -> AppEnvironment {
         // FOS-4 UI-test hygiene: `HERMES_FLEET_CONTINUE_RESET=1` deletes the
@@ -171,7 +172,8 @@ enum FleetServiceGraph {
         let roster: any FleetRosterProviding = FleetRosterService(
             registry: registry,
             credentials: credentialStore,
-            sessionFactory: makeSessionFactory(credentialStore: credentialStore, pinStore: pinStore)
+            sessionFactory: makeSessionFactory(credentialStore: credentialStore, pinStore: pinStore),
+            doctorSessionFactory: { makeGatewayHTTPSession(gateway: $0, pinStore: pinStore) }
         )
         let sessionList: any SessionListProviding = GatewaySessionListService(
             registry: registry,
@@ -226,7 +228,8 @@ enum FleetServiceGraph {
             },
             gatewaySessionInvalidatorAll: {
                 await FleetServiceGraph.sharedSessionStore.invalidateAll()
-            }
+            },
+            embeddedTailnet: embeddedTailnet
         )
     }
 
@@ -576,10 +579,13 @@ enum FleetServiceGraph {
     /// (first use pins, later connects must match). For http/ws endpoints
     /// there is no TLS and thus no server-trust challenge — the factory is
     /// the plain one (B2's cleartext warning stays the honest signal there).
-    nonisolated private static func makeSessionFactory(
+    nonisolated static func makeSessionFactory(
         gateway: FleetGateway,
         pinStore: any SynchronousPinStoring
     ) -> any WebSocketSessionFactory {
+        if gateway.transport == .embeddedTailscale {
+            return RoutedWebSocketSessionFactory(route: embeddedRoute(gateway: gateway, pinStore: pinStore))
+        }
         let scheme = gateway.endpoint?.scheme?.lowercased() ?? "http"
         guard scheme == "https" else {
             return URLSessionWebSocketSessionFactory()
@@ -596,10 +602,13 @@ enum FleetServiceGraph {
     /// WebSocket session; an unpinned or changed certificate is rejected by
     /// the shared Keychain-backed pin store. HTTP remains explicitly
     /// cleartext and is handled by the endpoint warning policy.
-    nonisolated private static func makeGatewayHTTPSession(
+    nonisolated static func makeGatewayHTTPSession(
         gateway: FleetGateway,
         pinStore: (any SynchronousPinStoring)?
-    ) -> URLSession {
+    ) -> any GatewayHTTPClient {
+        if gateway.transport == .embeddedTailscale {
+            return RoutedGatewayHTTPClient(route: embeddedRoute(gateway: gateway, pinStore: pinStore))
+        }
         let configuration = URLSessionConfiguration.ephemeral
         guard gateway.endpoint?.scheme?.lowercased() == "https",
               let pinStore else {
@@ -611,6 +620,14 @@ enum FleetServiceGraph {
             approvalStore: pinStore as? any SynchronousTLSFirstUseApprovalStoring)
         let delegate = URLSessionPinningDelegate(trustHandler: handler)
         return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    }
+
+    nonisolated private static func embeddedRoute(gateway: FleetGateway, pinStore: (any SynchronousPinStoring)?) -> GatewaySessionRoute {
+        let handler = pinStore.map { PinningTrustHandler(gatewayID: gateway.id, pinStore: $0,
+            approvalStore: $0 as? any SynchronousTLSFirstUseApprovalStoring) }
+        return GatewaySessionRoute(endpoint: gateway.endpoint ?? URL(string: "https://unconfigured.invalid")!, trustHandler: handler) {
+            try await embeddedTailnet.configuration()
+        }
     }
 
     nonisolated private static func makeConnection(
@@ -630,6 +647,8 @@ enum FleetServiceGraph {
         let sessionFactory: any WebSocketSessionFactory
         if let pinStore {
             sessionFactory = makeSessionFactory(gateway: gateway, pinStore: pinStore)
+        } else if gateway.transport == .embeddedTailscale {
+            sessionFactory = RoutedWebSocketSessionFactory(route: embeddedRoute(gateway: gateway, pinStore: nil))
         } else {
             sessionFactory = URLSessionWebSocketSessionFactory()
         }

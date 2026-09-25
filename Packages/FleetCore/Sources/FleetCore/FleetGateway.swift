@@ -16,6 +16,7 @@ public struct FleetGateway: Identifiable, Hashable, Sendable {
     public var displayName: String
     /// Base `http(s)://` endpoint used to mint WS tickets and build socket URLs.
     public var endpoint: URL?
+    public var transport: GatewayTransport
     /// Last known connection state (derived from the transport seam).
     public var connectionState: TransportState
     /// Capability flags advertised by the gateway (e.g. heartbeat, change_events).
@@ -40,11 +41,13 @@ public struct FleetGateway: Identifiable, Hashable, Sendable {
         serverIdentity: String? = nil,
         replayEpoch: String? = nil,
         authConfigured: Bool = false,
-        authConfiguration: GatewayAuthConfiguration = .none
+        authConfiguration: GatewayAuthConfiguration = .none,
+        transport: GatewayTransport = .system
     ) {
         self.id = id
         self.displayName = displayName
         self.endpoint = endpoint
+        self.transport = transport
         self.connectionState = connectionState
         self.capabilities = capabilities
         self.serverIdentity = serverIdentity

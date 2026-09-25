@@ -31,6 +31,7 @@ public actor FleetRosterService: FleetRosterProviding {
     /// H2: URLSession the surface-doctor `/health` probe uses (injectable for
     /// tests; defaults to `.shared`). Read-only, non-secret GET.
     private let doctorSession: URLSession
+    private let doctorSessionFactory: (@Sendable (FleetGateway) -> any GatewayHTTPClient)?
     /// FOS-4 (SPEC §17): at most this many gateways refresh concurrently.
     private let maxConcurrentGatewayRefreshes: Int
     /// FOS-4 (SPEC §17): per-gateway observation deadline. A gateway whose
@@ -43,6 +44,7 @@ public actor FleetRosterService: FleetRosterProviding {
         credentials: any CredentialStoring,
         sessionFactory: @escaping GatewayRosterSessionFactory,
         doctorSession: URLSession = .shared,
+        doctorSessionFactory: (@Sendable (FleetGateway) -> any GatewayHTTPClient)? = nil,
         maxConcurrentGatewayRefreshes: Int = 3,
         perGatewayDeadline: TimeInterval = 10
     ) {
@@ -50,6 +52,7 @@ public actor FleetRosterService: FleetRosterProviding {
         self.credentials = credentials
         self.sessionFactory = sessionFactory
         self.doctorSession = doctorSession
+        self.doctorSessionFactory = doctorSessionFactory
         self.maxConcurrentGatewayRefreshes = max(1, maxConcurrentGatewayRefreshes)
         self.perGatewayDeadline = perGatewayDeadline
     }
@@ -79,6 +82,7 @@ public actor FleetRosterService: FleetRosterProviding {
             var pending = gateways.makeIterator()
             let factory = sessionFactory
             let doctor = doctorSession
+            let doctorFactory = doctorSessionFactory
             let deadlineFenced = perGatewayDeadline
             func startNextIfNeeded() {
                 while inflight < maxConcurrentGatewayRefreshes, let gateway = pending.next() {
@@ -88,7 +92,7 @@ public actor FleetRosterService: FleetRosterProviding {
                             gateway,
                             credentials: credentials,
                             sessionFactory: factory,
-                            doctorSession: doctor,
+                            doctorSession: doctorFactory?(gateway) ?? doctor,
                             deadline: deadlineFenced
                         )
                     }
@@ -124,7 +128,7 @@ public actor FleetRosterService: FleetRosterProviding {
         _ gateway: FleetGateway,
         credentials: any CredentialStoring,
         sessionFactory: @escaping GatewayRosterSessionFactory,
-        doctorSession: URLSession,
+        doctorSession: any GatewayHTTPClient,
         deadline: TimeInterval
     ) async -> (GatewayID, GatewayRosterOutcome, FleetGateway, [FleetBot]) {
         let outcome: (GatewayRosterOutcome, FleetGateway, [FleetBot])
@@ -169,7 +173,7 @@ public actor FleetRosterService: FleetRosterProviding {
         _ gateway: FleetGateway,
         credentials: any CredentialStoring,
         sessionFactory: GatewayRosterSessionFactory,
-        doctorSession: URLSession
+        doctorSession: any GatewayHTTPClient
     ) async -> (GatewayRosterOutcome, FleetGateway, [FleetBot]) {
         let credential = try? await credentials.loadCredential(for: gateway.id)
         let session = sessionFactory(gateway, credential)

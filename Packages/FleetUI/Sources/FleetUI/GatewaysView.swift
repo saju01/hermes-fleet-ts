@@ -120,7 +120,8 @@ public struct GatewaysView: View {
                         edits: GatewayEdit(
                             displayName: registration.displayName,
                             endpoint: registration.endpoint,
-                            authConfiguration: registration.authConfiguration
+                            authConfiguration: registration.authConfiguration,
+                            transport: registration.transport
                         )
                     )
                     // Store a newly-entered credential (Keychain-safe);
@@ -454,7 +455,8 @@ public struct GatewaysView: View {
                     id: gateway.id,
                     displayName: gateway.displayName,
                     endpoint: endpoint,
-                    authConfiguration: gateway.authConfiguration
+                    authConfiguration: gateway.authConfiguration,
+                    transport: gateway.transport
                 ))
             } catch {
                 operationError = Self.describe(error)

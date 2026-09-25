@@ -38,7 +38,7 @@ public struct GatewayAuthenticator: AuthenticationProviding {
     private let baseURL: URL?
     /// URLSession forwarded to the built `WSTicketClient` (testable injection;
     /// defaults to `.shared`).
-    private let urlSession: URLSession
+    private let urlSession: any GatewayHTTPClient
     /// Shared per-gateway session-cookie ownership. Nil preserves the
     /// legacy per-call login behavior for isolated test/scripted graphs.
     private let sessionStore: (any GatewaySessionLeasing)?
@@ -57,7 +57,7 @@ public struct GatewayAuthenticator: AuthenticationProviding {
         ticketMinter: (any WSTicketMinting)? = nil,
         credentialStore: (any CredentialStoring)? = nil,
         baseURL: URL? = nil,
-        urlSession: URLSession = .shared,
+        urlSession: any GatewayHTTPClient = URLSession.shared,
         sessionStore: (any GatewaySessionLeasing)? = nil
     ) {
         self.gatewayID = gatewayID

@@ -76,6 +76,16 @@ struct GatewayFormSheet: View {
                         .foregroundStyle(theme.textSecondary)
                 }
 
+                Section {
+                    Picker("Network", selection: $draftStore.transport) {
+                        Text("Direct / System Network").tag(GatewayTransport.system)
+                        Text("Embedded Tailscale").tag(GatewayTransport.embeddedTailscale)
+                    }
+                    .accessibilityIdentifier("fleet.gateways.form.transport")
+                } header: { Text("Transport") } footer: {
+                    Text("Embedded Tailscale uses Fleet's own device identity, not the system VPN. Start and sign in from Settings first. Use an HTTPS MagicDNS (*.ts.net) address. Hermes credentials are still required separately.")
+                }
+
                 // C1 IA re-order (design): manual entry / URL is the tier-1
                 // primary path; the scanner is DEMOTED to a clearly-labeled
                 // secondary action — no server-side pairing-code generator
@@ -309,6 +319,7 @@ struct GatewayFormSheet: View {
 
     private var isValid: Bool {
         !trimmedName.isEmpty && endpointURL != nil
+            && (draftStore.transport == .system || endpointURL.map { (try? EmbeddedTailnetPolicy.validateEndpoint($0)) != nil } == true)
             && (!cleartextRisk || draftStore.confirmsCleartextSend)
             && (!secureEndpoint || draftStore.confirmsTLSFirstUse)
     }
@@ -327,7 +338,8 @@ struct GatewayFormSheet: View {
             authConfiguration: GatewayAuthConfiguration(
                 strategy: draftStore.strategy,
                 credentialStored: existing?.authConfiguration.credentialStored ?? false
-            )
+            ),
+            transport: draftStore.transport
         )
         // The credential for token strategies is the token itself; for the
         // username/password strategy it is the password with the username

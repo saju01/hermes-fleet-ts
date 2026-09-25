@@ -276,6 +276,7 @@ extension SwiftDataCacheStore: HealthStatsStoring {
             displayName: record.displayName,
             endpoint: record.endpoint,
             authStrategyRaw: record.authConfiguration.strategy.rawValue,
+            transportRaw: record.transport.rawValue,
             credentialStored: record.authConfiguration.credentialStored,
             authConfigured: record.authConfigured
         ))
@@ -294,10 +295,13 @@ extension SwiftDataCacheStore: HealthStatsStoring {
     public func loadGatewayRecords() async throws -> [StoredGatewayRecord] {
         let ctx = ModelContext(container)
         let rows = try ctx.fetch(FetchDescriptor<CachedGatewayRow>())
-        return rows
+        return try rows
             .sorted { $0.gatewayID < $1.gatewayID }
             .map { row in
-                StoredGatewayRecord(
+                guard let transport = GatewayTransport(rawValue: row.transportRaw ?? "system") else {
+                    throw CocoaError(.coderReadCorrupt)
+                }
+                return StoredGatewayRecord(
                     id: row.gatewayID,
                     displayName: row.displayName,
                     endpoint: row.endpoint,
@@ -305,7 +309,8 @@ extension SwiftDataCacheStore: HealthStatsStoring {
                         strategy: GatewayAuthConfiguration.Strategy(rawValue: row.authStrategyRaw) ?? .none,
                         credentialStored: row.credentialStored
                     ),
-                    authConfigured: row.authConfigured
+                    authConfigured: row.authConfigured,
+                    transport: transport
                 )
             }
     }

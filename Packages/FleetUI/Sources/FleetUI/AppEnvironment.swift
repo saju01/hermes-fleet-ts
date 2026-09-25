@@ -141,6 +141,7 @@ public enum GatewayConnectionState: Equatable, Sendable {
 @MainActor
 @Observable
 public final class AppEnvironment {
+    public let embeddedTailnet: (any EmbeddedTailnetManaging)?
     // MARK: Observable state (SwiftUI reads these)
 
     /// Registered gateways in stable ID order.
@@ -453,9 +454,11 @@ public final class AppEnvironment {
         voiceEngineFactory: FleetVoiceEngineFactory? = nil,
         connectionIntentDefaults: UserDefaults? = nil,
         gatewaySessionInvalidator: FleetGatewaySessionInvalidator? = nil,
-        gatewaySessionInvalidatorAll: FleetGatewaySessionInvalidatorAll? = nil
+        gatewaySessionInvalidatorAll: FleetGatewaySessionInvalidatorAll? = nil,
+        embeddedTailnet: (any EmbeddedTailnetManaging)? = nil
     ) {
         self.registry = registry
+        self.embeddedTailnet = embeddedTailnet
         self.roster = roster
         self.cache = cache
         self.tlsPinStore = tlsPinStore
@@ -1246,17 +1249,16 @@ public final class AppEnvironment {
         let previous = gateways.first(where: { $0.id == id })
         let gateway = try await registry.updateGateway(id, edits: edits)
         if previous?.endpoint != gateway.endpoint
-            || previous?.authConfiguration != gateway.authConfiguration {
+            || previous?.authConfiguration != gateway.authConfiguration
+            || previous?.transport != gateway.transport {
             await gatewaySessionInvalidator?(id)
+            await retireGatewaySessions(id)
         }
         await reloadGateways()
         return gateway
     }
 
-    public func removeGateway(_ id: GatewayID) async throws {
-        try await registry.removeGateway(id)
-        connectionIntent.clear(id)
-        await gatewaySessionInvalidator?(id)
+    private func retireGatewaySessions(_ id: GatewayID) async {
         // P1-8: retire session resources with the gateway — tear down the
         // live connection (not just drop the reference), release the
         // conversation session, and clear observable lifecycle state.
@@ -1300,6 +1302,14 @@ public final class AppEnvironment {
         roomsByGateway[id] = nil
         canCreateRoomsByGateway[id] = nil
         connectionStates[id] = nil
+        await botManagement.retireGateway(id)
+    }
+
+    public func removeGateway(_ id: GatewayID) async throws {
+        try await registry.removeGateway(id)
+        connectionIntent.clear(id)
+        await gatewaySessionInvalidator?(id)
+        await retireGatewaySessions(id)
         testResults[id] = nil
         testResultObservedAt[id] = nil
         // FOS-4 (SPEC §8 removal): a removed source's saved recent-open

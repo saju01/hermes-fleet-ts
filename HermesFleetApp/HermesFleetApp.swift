@@ -55,8 +55,14 @@ struct HermesFleetApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             lockController.handleScenePhase(phase)
+            if phase == .background {
+                Task { try? await environment.embeddedTailnet?.suspend() }
+            }
             if phase == .active && !lockController.isLocked {
-                Task { await environment.restoreIntendedConnections() }
+                Task {
+                    try? await environment.embeddedTailnet?.resume()
+                    await environment.restoreIntendedConnections()
+                }
             }
         }
         .onChange(of: lockController.isLocked) { _, isLocked in
@@ -69,6 +75,7 @@ struct HermesFleetApp: App {
                 // unlock transition must resume protected hydration.
                 Task {
                     await environment.hydrateIfNeeded()
+                    try? await environment.embeddedTailnet?.resume()
                     await environment.restoreIntendedConnections()
                 }
             }

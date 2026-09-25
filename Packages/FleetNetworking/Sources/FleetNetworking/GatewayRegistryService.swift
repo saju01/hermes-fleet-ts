@@ -71,6 +71,9 @@ public actor GatewayRegistryService: GatewayRegistryManaging {
         // query/fragment at the registry boundary before anything is stored,
         // displayed, or logged.
         let endpoint = try GatewayEndpoint.normalizedOrigin(from: registration.endpoint)
+        if registration.transport == .embeddedTailscale {
+            try EmbeddedTailnetPolicy.validateEndpoint(endpoint)
+        }
         let id = registration.id ?? GatewayID(endpoint: endpoint)
         // M9 fail-closed guard: an unsafe gateway ID (path traversal, `#`,
         // separators) is rejected before registration — it must never become
@@ -85,7 +88,8 @@ public actor GatewayRegistryService: GatewayRegistryManaging {
             id: id,
             displayName: displayName,
             endpoint: endpoint,
-            authConfiguration: registration.authConfiguration
+            authConfiguration: registration.authConfiguration,
+            transport: registration.transport
         )
         registry.register(gateway)
         // P0-4: persist IMMEDIATELY on Add — the record survives app close /
@@ -111,10 +115,17 @@ public actor GatewayRegistryService: GatewayRegistryManaging {
             normalizedEdits = GatewayEdit(
                 displayName: edits.displayName,
                 endpoint: try GatewayEndpoint.normalizedOrigin(from: endpoint),
-                authConfiguration: edits.authConfiguration
+                authConfiguration: edits.authConfiguration,
+                transport: edits.transport
             )
         } else {
             normalizedEdits = edits
+        }
+        if let existing = registry.gateway(for: id) {
+            let proposed = normalizedEdits.applied(to: existing)
+            if proposed.transport == .embeddedTailscale, let endpoint = proposed.endpoint {
+                try EmbeddedTailnetPolicy.validateEndpoint(endpoint)
+            }
         }
         registry.update(id) { gateway in
             let updated = normalizedEdits.applied(to: gateway)
@@ -338,7 +349,8 @@ public actor GatewayRegistryService: GatewayRegistryManaging {
                 authConfiguration: GatewayAuthConfiguration(
                     strategy: record.authConfiguration.strategy,
                     credentialStored: hasCredential
-                )
+                ),
+                transport: record.transport
             )
             registry.register(gateway)
             restored.append(gateway)
@@ -355,7 +367,8 @@ public actor GatewayRegistryService: GatewayRegistryManaging {
             displayName: gateway.displayName,
             endpoint: gateway.endpoint?.absoluteString ?? "",
             authConfiguration: gateway.authConfiguration,
-            authConfigured: gateway.authConfigured
+            authConfigured: gateway.authConfigured,
+            transport: gateway.transport
         ))
     }
 }

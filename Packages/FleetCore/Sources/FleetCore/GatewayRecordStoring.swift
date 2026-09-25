@@ -22,19 +22,37 @@ public struct StoredGatewayRecord: Codable, Hashable, Sendable, Equatable {
     /// Whether auth was configured for this gateway at persist time
     /// (informational; the flag is re-derived from Keychain on restore).
     public var authConfigured: Bool
+    public var transport: GatewayTransport
 
     public init(
         id: String,
         displayName: String,
         endpoint: String,
         authConfiguration: GatewayAuthConfiguration = .none,
-        authConfigured: Bool = false
+        authConfigured: Bool = false,
+        transport: GatewayTransport = .system
     ) {
         self.id = id
         self.displayName = displayName
         self.endpoint = endpoint
         self.authConfiguration = authConfiguration
         self.authConfigured = authConfigured
+        self.transport = transport
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, endpoint, authConfiguration, authConfigured, transport
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        displayName = try values.decode(String.self, forKey: .displayName)
+        endpoint = try values.decode(String.self, forKey: .endpoint)
+        authConfiguration = try values.decode(GatewayAuthConfiguration.self, forKey: .authConfiguration)
+        authConfigured = try values.decode(Bool.self, forKey: .authConfigured)
+        // Unknown explicit modes fail decoding rather than silently becoming direct.
+        transport = try values.decodeIfPresent(GatewayTransport.self, forKey: .transport) ?? .system
     }
 }
 

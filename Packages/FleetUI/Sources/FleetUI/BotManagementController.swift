@@ -42,6 +42,12 @@ public final class BotManagementController {
     @ObservationIgnored private var avatarWaiters: [CheckedContinuation<Void, Never>] = []
     private let factory: FleetBotProfileFactory?
     @ObservationIgnored private var seams: [GatewayID: any BotProfileManaging] = [:]
+
+    public func retireGateway(_ id: GatewayID) async {
+        if let seam = seams.removeValue(forKey: id) {
+            await (seam as? any GatewaySessionDisconnecting)?.disconnect()
+        }
+    }
     private var gatewayProvider: @MainActor () -> [FleetGateway]
 
     public init(

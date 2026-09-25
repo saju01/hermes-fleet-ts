@@ -69,13 +69,13 @@ public enum PasswordLoginError: Error, Sendable, Equatable, LocalizedError {
 /// secret whose printable form is redacted; errors carry no credentials.
 public struct PasswordLoginClient: Sendable {
     public let baseURL: URL
-    public let urlSession: URLSession
+    public let urlSession: any GatewayHTTPClient
 
     /// Non-secret diagnostics for the LAN username/password flow (no
     /// credentials ever logged — only endpoint + HTTP status).
     private static let log = Logger(subsystem: "com.aiowa.hermesfleet", category: "password-login")
 
-    public init(baseURL: URL, urlSession: URLSession = .shared) {
+    public init(baseURL: URL, urlSession: any GatewayHTTPClient = URLSession.shared) {
         self.baseURL = baseURL
         self.urlSession = urlSession
     }

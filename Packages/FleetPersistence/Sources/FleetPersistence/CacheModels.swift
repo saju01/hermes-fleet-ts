@@ -193,6 +193,8 @@ public final class CachedGatewayRow {
     /// Non-secret auth STRATEGY raw value ("none"/"sessionToken"/…) — never
     /// secret material.
     public var authStrategyRaw: String
+    // Optional for lightweight migration of existing stores. Nil means system.
+    public var transportRaw: String?
     /// Whether a credential was stored (Keychain) at persist time.
     public var credentialStored: Bool
     /// Whether auth was configured at persist time (informational; re-derived
@@ -204,6 +206,7 @@ public final class CachedGatewayRow {
         displayName: String,
         endpoint: String,
         authStrategyRaw: String,
+        transportRaw: String? = nil,
         credentialStored: Bool,
         authConfigured: Bool
     ) {
@@ -211,6 +214,7 @@ public final class CachedGatewayRow {
         self.displayName = displayName
         self.endpoint = endpoint
         self.authStrategyRaw = authStrategyRaw
+        self.transportRaw = transportRaw
         self.credentialStored = credentialStored
         self.authConfigured = authConfigured
     }

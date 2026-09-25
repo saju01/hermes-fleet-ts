@@ -14,6 +14,7 @@ public struct GatewayRegistration: Sendable, Equatable {
     public var displayName: String
     /// Base `http(s)://` endpoint of the gateway.
     public var endpoint: URL
+    public var transport: GatewayTransport
     /// Non-secret authentication configuration for this gateway.
     public var authConfiguration: GatewayAuthConfiguration
 
@@ -21,11 +22,13 @@ public struct GatewayRegistration: Sendable, Equatable {
         id: GatewayID? = nil,
         displayName: String,
         endpoint: URL,
-        authConfiguration: GatewayAuthConfiguration = .none
+        authConfiguration: GatewayAuthConfiguration = .none,
+        transport: GatewayTransport = .system
     ) {
         self.id = id
         self.displayName = displayName
         self.endpoint = endpoint
+        self.transport = transport
         self.authConfiguration = authConfiguration
     }
 }

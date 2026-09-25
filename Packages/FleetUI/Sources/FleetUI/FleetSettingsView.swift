@@ -34,6 +34,9 @@ public struct FleetSettingsView: View {
 
     public var body: some View {
         Form {
+            if let service = environment?.embeddedTailnet {
+                EmbeddedTailnetSettingsSection(service: service)
+            }
             Section {
                 Toggle(isOn: Binding(
                     get: { controller.isEnabled },

@@ -475,6 +475,16 @@ final class AppEnvironmentTests: XCTestCase {
 
     // MARK: U2 — Gateway registry management over the seam
 
+    func testTransportChangeRetiresOldGatewayConnection() async throws {
+        let id = GatewayID(rawValue: "fixture")
+        let (environment, _) = await makeEnvironment(gateways: [GatewayRegistration(
+            id: id, displayName: "Fixture", endpoint: URL(string: "https://host.example.ts.net")!)])
+        await environment.connect(to: id)
+        XCTAssertNotNil(environment.connectionStates[id])
+        _ = try await environment.updateGateway(id, edits: GatewayEdit(transport: .embeddedTailscale))
+        XCTAssertEqual(environment.connectionStates[id], .idle, "Old system-network sessions must not survive changing transport")
+    }
+
     func testUpdateGatewayAppliesEdits() async throws {
         let (environment, _) = await makeEnvironment(gateways: [
             registration("workstation", name: "Workstation"),

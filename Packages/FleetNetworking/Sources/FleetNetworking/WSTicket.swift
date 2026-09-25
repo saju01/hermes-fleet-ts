@@ -70,7 +70,7 @@ public struct WSTicketClient: WSTicketMinting {
     /// the `Cookie` header on the mint (P3 LAN-gateway username/password
     /// flow). Mutually exclusive in practice with `sessionToken`.
     public let sessionCookie: SessionCookie?
-    public let urlSession: URLSession
+    public let urlSession: any GatewayHTTPClient
 
     /// Non-secret diagnostics (endpoint + HTTP status only).
     private static let log = Logger(subsystem: "com.aiowa.hermesfleet", category: "ws-ticket")
@@ -79,7 +79,7 @@ public struct WSTicketClient: WSTicketMinting {
         baseURL: URL,
         sessionToken: String? = nil,
         sessionCookie: SessionCookie? = nil,
-        urlSession: URLSession = .shared
+        urlSession: any GatewayHTTPClient = URLSession.shared
     ) {
         self.baseURL = baseURL
         self.sessionToken = sessionToken

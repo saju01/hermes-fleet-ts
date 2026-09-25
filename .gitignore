@@ -37,3 +37,6 @@ xcodespeed/
 /hosted/
 /local/
 /evidence.md
+
+# Rebuilt from the pinned official SDK; never commit binaries or node state.
+/Vendor/TailscaleKit.xcframework/

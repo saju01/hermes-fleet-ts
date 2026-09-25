@@ -32,6 +32,7 @@ public final class GatewayFormDraftStore {
 
     public var displayName = ""
     public var endpointText = ""
+    public var transport: GatewayTransport = .system
     public var strategy: GatewayAuthConfiguration.Strategy = .none
     public var tokenText = ""
     public var usernameText = ""
@@ -56,6 +57,7 @@ public final class GatewayFormDraftStore {
         self.pendingSheet = pendingSheet
         displayName = initial?.displayName ?? ""
         endpointText = initial?.endpoint?.absoluteString ?? ""
+        transport = initial?.transport ?? .system
         strategy = initial?.authConfiguration.strategy ?? .none
         tokenText = ""
         usernameText = ""
@@ -72,6 +74,7 @@ public final class GatewayFormDraftStore {
         pendingSheet = nil
         displayName = ""
         endpointText = ""
+        transport = .system
         strategy = .none
         tokenText = ""
         usernameText = ""

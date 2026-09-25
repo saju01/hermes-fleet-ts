@@ -78,6 +78,33 @@ final class GatewayRecordWriteThroughTests: XCTestCase {
 
     // MARK: persist-on-Add (the P0-4 core)
 
+    func testEmbeddedRegistrationRejectsPublicAndCleartextEndpoints() async throws {
+        for raw in ["https://public.example.com", "http://host.example.ts.net", "https://localhost", "https://host.example.ts.net.evil.invalid"] {
+            let (service, _, _) = await makeService()
+            do {
+                _ = try await service.addGateway(GatewayRegistration(displayName: "Fixture", endpoint: URL(string: raw)!, transport: .embeddedTailscale))
+                XCTFail("Embedded routing admitted unsafe endpoint")
+            } catch { }
+        }
+        let (service, records, _) = await makeService()
+        let added = try await service.addGateway(GatewayRegistration(displayName: "Fixture", endpoint: URL(string: "https://host.example.ts.net")!, transport: .embeddedTailscale))
+        XCTAssertEqual(added.transport, .embeddedTailscale)
+        let loaded = try await records.loadGatewayRecords()
+        XCTAssertEqual(loaded.first?.transport, .embeddedTailscale)
+    }
+
+    func testEmbeddedTransportRestoresAndSurvivesEdit() async throws {
+        let records = TestRecordStore()
+        try await records.saveGatewayRecord(StoredGatewayRecord(
+            id: gatewayID.rawValue, displayName: "Fixture", endpoint: "https://host.example.ts.net",
+            transport: .embeddedTailscale))
+        let (service, _, _) = await makeService(records: records)
+        _ = try await service.restorePersistedGateways()
+        _ = try await service.updateGateway(gatewayID, edits: GatewayEdit(displayName: "Renamed"))
+        let loaded = try await records.loadGatewayRecords()
+        XCTAssertEqual(loaded.first?.transport, .embeddedTailscale)
+    }
+
     func testAddPersistsRecordImmediatelyWithoutConnection() async throws {
         let (service, records, _) = await makeService()
 

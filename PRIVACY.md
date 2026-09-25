@@ -1,6 +1,6 @@
 # Hermes Fleet Privacy Policy
 
-Last updated: 2026-09-13
+Last updated: 2026-09-24
 
 Hermes Fleet is an iOS client for Hermes Agent gateways that the person using
 the app selects and controls. This policy describes the behavior of the
@@ -34,6 +34,29 @@ the support or policy links; GitHub's own terms and privacy policy apply to
 that visit.
 
 ## Retention and deletion
+
+### Optional embedded Tailscale
+
+When explicitly started, Fleet can join your tailnet as its own userspace
+Tailscale device. It contacts Tailscale's coordination and relay services;
+Tailscale's privacy policy applies to that network service. It does not install
+a system VPN or route other apps' traffic. Browser enrollment happens on
+Tailscale's official login site. Fleet does not collect your Tailscale password
+or accept administrative API keys.
+
+The SDK's device identity is stored in Fleet's private Application Support
+directory with complete iOS file protection and backup exclusion. It is not
+stored in UserDefaults or included in exports. The SDK's backend and user logs
+are disabled, and enrollment URLs are transient UI-only data. Hermes gateway
+credentials retain their separate, non-synchronizing device-only Keychain
+protection. Stop closes embedded gateway sessions; logout revokes the local
+Tailscale login, but does not delete Hermes gateway credentials. A tailnet
+administrator can remove the device record separately.
+
+Embedded routing accepts only the exact configured HTTPS MagicDNS endpoint;
+HTTP and WebSocket redirects are not followed. It never silently falls back
+to system networking. No real tailnet account or device verification is implied
+by fixture-based tests.
 
 Local cached fleet and conversation data remains on the device until it is
 expired by the app's bounded cache policy or removed by the user through the

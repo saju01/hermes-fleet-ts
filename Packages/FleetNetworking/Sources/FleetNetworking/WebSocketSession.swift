@@ -65,10 +65,19 @@ public final class URLSessionWebSocketSession: WebSocketSession, @unchecked Send
     private final class CloseDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
         var onClose: (@Sendable (Int, Data?) -> Void)?
         let trustHandler: PinningTrustHandler?
+        let rejectRedirects: Bool
         private let failureLock = OSAllocatedUnfairLock<TLSPinRejectedError?>(initialState: nil)
 
-        init(trustHandler: PinningTrustHandler?) {
+        init(trustHandler: PinningTrustHandler?, rejectRedirects: Bool) {
             self.trustHandler = trustHandler
+            self.rejectRedirects = rejectRedirects
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest,
+                        completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(rejectRedirects ? nil : request)
         }
 
         /// The typed pin-mismatch failure recorded by the challenge path
@@ -144,8 +153,11 @@ public final class URLSessionWebSocketSession: WebSocketSession, @unchecked Send
     private let delegate: CloseDelegate
     private let lock = OSAllocatedUnfairLock<Int?>(initialState: nil)
 
-    public init(url: URL, configuration: URLSessionConfiguration = .ephemeral, trustHandler: PinningTrustHandler? = nil) {
-        let delegate = CloseDelegate(trustHandler: trustHandler)
+    private var lifetime: GatewaySessionLifetime?
+    private var lifetimeID: UUID?
+
+    public init(url: URL, configuration: URLSessionConfiguration = .ephemeral, trustHandler: PinningTrustHandler? = nil, rejectRedirects: Bool = false) {
+        let delegate = CloseDelegate(trustHandler: trustHandler, rejectRedirects: rejectRedirects)
         self.delegate = delegate
         self.urlSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         self.task = urlSession.webSocketTask(with: url)
@@ -156,6 +168,17 @@ public final class URLSessionWebSocketSession: WebSocketSession, @unchecked Send
 
     public var lastCloseCode: Int? {
         lock.withLock { $0 }
+    }
+
+    // Called once, before publishing/opening the socket.
+    func bindLifetime(_ lifetime: GatewaySessionLifetime) throws {
+        lifetimeID = try lifetime.register(urlSession)
+        self.lifetime = lifetime
+    }
+
+    deinit {
+        urlSession.invalidateAndCancel()
+        if let lifetimeID { lifetime?.remove(lifetimeID) }
     }
 
     public func open() async throws {
@@ -193,6 +216,8 @@ public final class URLSessionWebSocketSession: WebSocketSession, @unchecked Send
     public func close(code: Int, reason: String?) async {
         let closeCode = URLSessionWebSocketTask.CloseCode(rawValue: code) ?? .normalClosure
         task.cancel(with: closeCode, reason: reason?.data(using: .utf8))
+        urlSession.invalidateAndCancel()
+        if let lifetimeID { lifetime?.remove(lifetimeID) }
         lock.withLock { $0 = code }
     }
 }
