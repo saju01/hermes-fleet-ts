@@ -12,6 +12,25 @@ import FleetCore
 /// hard guard). Injected at the composition root (app target): production
 /// builds a `SingleGatewayConnection`; DEBUG simulator builds a scripted
 /// connection; tests inject scripted doubles.
+public typealias FleetPairingConnectionFactory = @Sendable (FleetGateway, PairingCredentialLease) -> any GatewayConnectivityProviding
+
+@MainActor private final class PairingCommitState {
+    var committed = false
+    var task: Task<GatewayID, Error>?
+    var lease: PairingCredentialLease?
+    var connection: (any GatewayConnectivityProviding)?
+    func invalidate() {
+        guard !committed else { return }
+        task?.cancel()
+    }
+    func cancel() async {
+        guard !committed else { return }
+        invalidate()
+        await lease?.revoke()
+        await connection?.disconnect()
+    }
+}
+
 public typealias FleetConnectionFactory = @Sendable (
     _ gateway: FleetGateway,
     _ credential: GatewayCredential?
@@ -316,6 +335,11 @@ public final class AppEnvironment {
     private let tlsPinStore: (any TLSPinStoring)?
     private let tlsApprovalStore: (any TLSFirstUseApprovalStoring)?
     private let connectionFactory: FleetConnectionFactory
+    private let pairingConnectionFactory: FleetPairingConnectionFactory?
+    private var pairingAttempts: [GatewayID: PairingCommitState] = [:]
+    private var pairingLifecycleGeneration = UUID()
+    private var pairingDisconnectGenerations: [GatewayID: UUID] = [:]
+    private let pairingCredentialStore: (any CredentialStoring)?
     /// H2: connection-health accumulator (FleetCore seam; concrete
     /// `GatewayHealthStatsAccumulator` fed by the composition root's transport
     /// feed task — FleetUI never touches the transport module).
@@ -455,7 +479,9 @@ public final class AppEnvironment {
         connectionIntentDefaults: UserDefaults? = nil,
         gatewaySessionInvalidator: FleetGatewaySessionInvalidator? = nil,
         gatewaySessionInvalidatorAll: FleetGatewaySessionInvalidatorAll? = nil,
-        embeddedTailnet: (any EmbeddedTailnetManaging)? = nil
+        embeddedTailnet: (any EmbeddedTailnetManaging)? = nil,
+        pairingConnectionFactory: FleetPairingConnectionFactory? = nil,
+        pairingCredentialStore: (any CredentialStoring)? = nil
     ) {
         self.registry = registry
         self.embeddedTailnet = embeddedTailnet
@@ -465,6 +491,8 @@ public final class AppEnvironment {
         self.tlsApprovalStore = tlsApprovalStore
         self.sessionList = sessionList
         self.connectionFactory = connectionFactory
+        self.pairingConnectionFactory = pairingConnectionFactory
+        self.pairingCredentialStore = pairingCredentialStore
         self.conversationFactory = conversationFactory
         self.kanbanWatcherFactory = kanbanWatcherFactory
         self.managementSeamFactory = managementSeamFactory
@@ -544,7 +572,7 @@ public final class AppEnvironment {
     }
 
     private func reloadGateways() async {
-        gateways = await registry.allGateways()
+        gateways = await registry.allGateways().filter { pairingAttempts[$0.id] == nil }
         connectionIntent.prune(to: Set(gateways.map(\.id)))
         for gateway in gateways where connectionStates[gateway.id] == nil {
             connectionStates[gateway.id] = .idle
@@ -1029,6 +1057,7 @@ public final class AppEnvironment {
     /// idempotent from `.open`, but the guard also prevents redundant work and
     /// keeps the observable lifecycle from flapping.)
     public func connect(to id: GatewayID) async {
+        guard pairingAttempts[id] == nil else { return }
         guard connectionStates[id] != .connecting,
               connectionStates[id] != .connected else { return }
         guard let gateway = gateways.first(where: { $0.id == id }) else { return }
@@ -1058,6 +1087,8 @@ public final class AppEnvironment {
 
     /// Disconnect cleanly and safely from every state (spec §31).
     public func disconnect(from id: GatewayID) async {
+        pairingDisconnectGenerations[id] = UUID()
+        await pairingAttempts[id]?.cancel()
         connectionIntent.clear(id)
         // Manual Disconnect is transport control, not sign-out. Keep the
         // in-memory authenticated lease so an explicit later Connect mints a
@@ -1078,6 +1109,11 @@ public final class AppEnvironment {
     /// seam, so they are explicitly disconnected in addition to the base
     /// gateway connections.
     public func disconnectAll() async {
+        pairingLifecycleGeneration = UUID()
+        let pending = Array(pairingAttempts.values)
+        // Fence every attempt synchronously before the first cleanup await.
+        for attempt in pending { attempt.invalidate() }
+        for attempt in pending { await attempt.cancel() }
         let connections = Array(activeConnections.values)
         let conversations = Array(conversationSessions.values)
         let kanban = Array(kanbanWatchers.values)
@@ -1217,7 +1253,120 @@ public final class AppEnvironment {
 
     // MARK: Registry passthroughs (U2 Gateway management reuses these)
 
+    /// Use the existing credential store + native authenticator/connection
+    /// factory. There is no Fleet server endpoint and no network-trust bypass.
+    public func completePairing(_ enrollment: PairingEnrollment, confirmsTLSFirstUse: Bool) async throws -> GatewayID {
+        guard confirmsTLSFirstUse else { throw FleetPairingError.rejected }
+        guard pairingConnectionFactory != nil, pairingCredentialStore != nil else { throw FleetPairingError.unavailable }
+        try Task.checkCancellation()
+        let id = GatewayID(endpoint: enrollment.origin)
+        let lifecycle = pairingLifecycleGeneration
+        let disconnectGeneration = pairingDisconnectGenerations[id]
+        // A replacement waits for the old attempt's owned cleanup rather than
+        // stealing its reservation or reporting a spurious unavailable error.
+        while let previous = pairingAttempts[id], let task = previous.task {
+            _ = try? await task.value
+            try Task.checkCancellation()
+            guard lifecycle == pairingLifecycleGeneration, disconnectGeneration == pairingDisconnectGenerations[id] else { throw CancellationError() }
+        }
+        let attempt = PairingCommitState()
+        let task = Task {
+            defer { if pairingAttempts[id] === attempt { pairingAttempts[id] = nil } }
+            return try await performPairing(enrollment, id: id, attempt: attempt)
+        }
+        attempt.task = task
+        pairingAttempts[id] = attempt
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+            Task { await attempt.cancel() }
+        }
+    }
+
+    private func performPairing(_ enrollment: PairingEnrollment, id: GatewayID, attempt: PairingCommitState) async throws -> GatewayID {
+        guard let pairingConnectionFactory, let pairingCredentialStore else { throw FleetPairingError.unavailable }
+        guard await registry.gateway(for: id) == nil else { throw GatewayRegistryError.duplicate(id) }
+        // Orphaned durable material still belongs to the user. Never overwrite
+        // it, or destroy it through a later ordinary registry rollback.
+        guard try await pairingCredentialStore.loadCredential(for: id) == nil else { throw GatewayRegistryError.duplicate(id) }
+        let previousPin = try await tlsPinStore?.loadPin(for: id)
+        let wasApproved = try await tlsApprovalStore?.isFirstUseApproved(for: id) ?? false
+        try Task.checkCancellation()
+        let registration = GatewayRegistration(displayName: enrollment.name, endpoint: enrollment.origin,
+            authConfiguration: .init(strategy: enrollment.strategy), transport: .embeddedTailscale)
+        let gateway = FleetGateway(id: id, displayName: enrollment.name, endpoint: enrollment.origin,
+            authConfiguration: registration.authConfiguration, transport: .embeddedTailscale)
+        let lease = PairingCredentialLease(gatewayID: id, credential: enrollment.credential)
+        let connection = pairingConnectionFactory(gateway, lease)
+        attempt.lease = lease
+        attempt.connection = connection
+        var registered = false
+        do {
+            try Task.checkCancellation()
+            try await tlsApprovalStore?.approveFirstUse(for: id)
+            try Task.checkCancellation()
+            try await connection.connect()
+            try Task.checkCancellation()
+            guard connection.status.isReachable else { throw FleetPairingError.connectionUnverified }
+            _ = try await registry.addGateway(registration)
+            registered = true
+            try Task.checkCancellation()
+            try await registry.saveCredential(enrollment.credential, for: id)
+            try Task.checkCancellation()
+            try await lease.commit()
+            // New QR credentials must also replace stale shared cookies used
+            // by later roster/conversation connections, not just this socket.
+            await gatewaySessionInvalidator?(id)
+            let committedGateways = await registry.allGateways()
+            try Task.checkCancellation()
+            guard pairingAttempts[id] === attempt else { throw CancellationError() }
+            // Atomic main-actor ownership transfer: no published idle row and
+            // no await that permits ordinary connect/remove to race this socket.
+            attempt.committed = true
+            pairingAttempts[id] = nil
+            activeConnections[id] = connection
+            connectionStates[id] = .connected
+            gateways = committedGateways.filter { pairingAttempts[$0.id] == nil }
+            connectionIntent.record(id)
+            settleHydrationPhase()
+            scheduleRosterSyncAfterConnectionRepair(for: id)
+            return id
+        } catch {
+            await lease.revoke()
+            await connection.disconnect()
+            // Session invalidation must run even when durable rollback fails.
+            await gatewaySessionInvalidator?(id)
+            var cleanupFailed = false
+            if registered {
+                do { try await registry.removeGatewayPreservingTrust(id) }
+                catch { cleanupFailed = true }
+                connectionIntent.clear(id)
+            }
+            let remaining = await registry.gateway(for: id)
+            if registered || remaining == nil {
+                if previousPin == nil {
+                    do { try await tlsPinStore?.deletePin(for: id) }
+                    catch { cleanupFailed = true }
+                }
+                // Approval is a separate store operation: a failed pin delete
+                // must not silently keep this attempt's first-use consent.
+                do {
+                    if wasApproved { try await tlsApprovalStore?.approveFirstUse(for: id) }
+                    else { try await tlsApprovalStore?.resetFirstUseApproval(for: id) }
+                } catch { cleanupFailed = true }
+            }
+            if cleanupFailed { throw FleetPairingError.cleanupRequired }
+            if let error = error as? GatewayConnectivityError,
+               GatewayStatus(connectivityError: error) == .authenticationRequired {
+                throw FleetPairingError.rejected
+            }
+            throw error
+        }
+    }
+
     public func addGateway(_ registration: GatewayRegistration) async throws -> FleetGateway {
+        guard pairingAttempts[registration.id ?? GatewayID(endpoint: registration.endpoint)] == nil else { throw FleetPairingError.unavailable }
         let gateway = try await registry.addGateway(registration)
         await reloadGateways()
         return gateway
@@ -1232,6 +1381,7 @@ public final class AppEnvironment {
         credential: GatewayCredential?,
         confirmsTLSFirstUse: Bool = false
     ) async throws -> FleetGateway {
+        guard pairingAttempts[registration.id ?? GatewayID(endpoint: registration.endpoint)] == nil else { throw FleetPairingError.unavailable }
         let gateway = try await registry.addGateway(registration)
         if confirmsTLSFirstUse {
             try await tlsApprovalStore?.approveFirstUse(for: gateway.id)
@@ -1246,6 +1396,7 @@ public final class AppEnvironment {
     /// Apply a partial edit to a gateway's display name / endpoint / auth
     /// config. Throws `.notFound` / `.invalidEndpoint` from the registry seam.
     public func updateGateway(_ id: GatewayID, edits: GatewayEdit) async throws -> FleetGateway {
+        guard pairingAttempts[id] == nil else { throw FleetPairingError.unavailable }
         let previous = gateways.first(where: { $0.id == id })
         let gateway = try await registry.updateGateway(id, edits: edits)
         if previous?.endpoint != gateway.endpoint
@@ -1306,6 +1457,11 @@ public final class AppEnvironment {
     }
 
     public func removeGateway(_ id: GatewayID) async throws {
+        guard pairingAttempts[id] == nil else { throw FleetPairingError.unavailable }
+        try await removeRegisteredGateway(id)
+    }
+
+    private func removeRegisteredGateway(_ id: GatewayID) async throws {
         try await registry.removeGateway(id)
         connectionIntent.clear(id)
         await gatewaySessionInvalidator?(id)
@@ -1352,15 +1508,31 @@ public final class AppEnvironment {
     /// Store a credential for a gateway (Keychain via the registry seam; the
     /// secret never transits the UI model or logs). Marks auth configured.
     public func saveCredential(_ credential: GatewayCredential, for id: GatewayID) async throws {
-        try await registry.saveCredential(credential, for: id)
-        await gatewaySessionInvalidator?(id)
-        await reloadGateways()
+        guard pairingAttempts[id] == nil else { throw FleetPairingError.unavailable }
+        do { try await registry.saveCredential(credential, for: id) }
+        catch {
+            // Keychain mutation can succeed before record persistence throws.
+            // Never retain cookies/sockets merely because metadata failed.
+            await retireCredentialSessions(id)
+            throw error
+        }
+        await retireCredentialSessions(id)
     }
 
     /// Clear the stored credential for a gateway (no-op when absent).
     public func clearCredential(for id: GatewayID) async throws {
-        try await registry.clearCredential(for: id)
+        guard pairingAttempts[id] == nil else { throw FleetPairingError.unavailable }
+        do { try await registry.clearCredential(for: id) }
+        catch {
+            await retireCredentialSessions(id)
+            throw error
+        }
+        await retireCredentialSessions(id)
+    }
+
+    private func retireCredentialSessions(_ id: GatewayID) async {
         await gatewaySessionInvalidator?(id)
+        await retireGatewaySessions(id)
         await reloadGateways()
     }
 

@@ -24,6 +24,8 @@ import UIKit
 /// successful Save.
 struct GatewayFormSheet: View {
     @Environment(\.fleetTheme) private var theme
+    private let environment: AppEnvironment?
+    @Environment(\.scenePhase) private var phase
     private let title: String
     private let saveButton: String
     /// Non-nil when editing an existing gateway (prefill / registration id).
@@ -46,8 +48,10 @@ struct GatewayFormSheet: View {
         saveButton: String,
         initial: FleetGateway?,
         draftStore: GatewayFormDraftStore,
+        environment: AppEnvironment? = nil,
         onSave: @escaping (GatewayRegistration, GatewayCredential?, Bool) async throws -> Void
     ) {
+        self.environment = environment
         self.title = title
         self.saveButton = saveButton
         self.existing = initial
@@ -58,6 +62,9 @@ struct GatewayFormSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let origin = draftStore.pairingOrigin {
+                    guidedPairing(origin)
+                } else {
                 Section {
                     TextField("Display Name", text: $draftStore.displayName)
                         .foregroundStyle(theme.textPrimary)
@@ -211,6 +218,7 @@ struct GatewayFormSheet: View {
                             .foregroundStyle(FleetTheme.statusDestructive)
                     }
                 }
+                }
             }
             .scrollContentBackground(.hidden)
             .background(theme.background.ignoresSafeArea())
@@ -226,11 +234,13 @@ struct GatewayFormSheet: View {
                     }
                     .accessibilityIdentifier("fleet.gateways.form.cancel")
                 }
+                if draftStore.pairingOrigin == nil {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(saveButton) { save() }
                         .disabled(!isValid || isSaving)
                         .foregroundStyle(theme.highlight)
                         .accessibilityIdentifier("fleet.gateways.form.save")
+                }
                 }
             }
         }
@@ -244,6 +254,52 @@ struct GatewayFormSheet: View {
         // the user is never silently thrown out of an in-progress credential
         // entry. Dismissal is explicit (Cancel / Save).
         .interactiveDismissDisabled()
+    }
+
+    @ViewBuilder
+    private func guidedPairing(_ origin: URL) -> some View {
+        Section("Pair securely with embedded Tailscale") {
+            Text(origin.absoluteString)
+                .accessibilityIdentifier("fleet.pairing.origin")
+            Text("Fleet uses its own Tailscale device, then automatically signs in with the Hermes credentials from your private QR. No password re-entry is needed. Confirm this gateway before continuing.")
+            if let model = draftStore.guidedPairing {
+                Text(model.state.rawValue).accessibilityIdentifier("fleet.pairing.status")
+                if model.state != .connected && model.state != .failed {
+                    Toggle("I trust this gateway's address and first TLS certificate", isOn: Binding(
+                        get: { model.trustConfirmed }, set: { model.trustConfirmed = $0 }))
+                        .accessibilityIdentifier("fleet.pairing.trust")
+                        .disabled(model.state == .verifying)
+                    if let url = model.enrollmentURL {
+                        Link("Continue to official Tailscale sign-in", destination: url)
+                            .accessibilityIdentifier("fleet.pairing.browser")
+                    }
+                }
+                if let message = model.errorMessage { Text(message).accessibilityIdentifier("fleet.pairing.error") }
+                if model.state == .connected {
+                    Button("Done") { draftStore.clear(); dismiss() }
+                        .accessibilityIdentifier("fleet.pairing.done")
+                }
+            } else if environment?.embeddedTailnet == nil {
+                Text("Embedded pairing is unavailable in this environment. No login was saved.")
+                    .accessibilityIdentifier("fleet.pairing.unavailable")
+            }
+        }
+        .task(id: phase) {
+            guard phase == .active, let environment, let service = environment.embeddedTailnet else { return }
+            if draftStore.guidedPairing == nil {
+                guard let enrollment = draftStore.takeEnrollment() else { return }
+                let model = GuidedPairingModel(service: service) { [weak environment] enrollment in
+                    guard let environment else { throw FleetPairingError.unavailable }
+                    _ = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true)
+                }
+                draftStore.guidedPairing = model
+                await model.begin(enrollment)
+            }
+            while !Task.isCancelled {
+                await draftStore.guidedPairing?.refresh()
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
     }
 
     /// P0-2: explicit "Paste" affordance next to a credential / URL field —

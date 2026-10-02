@@ -1,5 +1,7 @@
 import XCTest
 import os
+import Network
+import CryptoKit
 import FleetCore
 import FleetNetworking
 import FleetSecurity
@@ -16,6 +18,472 @@ import FleetUI
 /// consumer); FleetUI itself stays import-free of the transport module.
 @MainActor
 final class AppEnvironmentTests: XCTestCase {
+
+    func testPrivateQRPopulatesNativeAuthenticationThenLogsInOnceAfterEmbeddedReadiness() async throws {
+        let server = try PairingWireFixture()
+        try await server.start()
+        defer { server.stop() }
+        let base = URL(string: "http://127.0.0.1:\(server.listeningPort)")!
+        let credentials = KeychainCredentialStore()
+        let records = PairingFailingRecordStore()
+        let qr = EmbeddedTailnetUITests.qr().replacingOccurrences(of: "gateway.example.ts.net", with: "fixture-" + UUID().uuidString.lowercased() + ".example.ts.net")
+        let draft = GatewayFormDraftStore()
+        draft.begin(pendingSheet: .add, initial: nil)
+        try draft.applyPairing(qr)
+        XCTAssertEqual(draft.strategy, .usernamePassword)
+        XCTAssertEqual(draft.usernameText, "fixture-user")
+        XCTAssertEqual(draft.passwordText, "NOT-A-CREDENTIAL")
+        let enrollment = try XCTUnwrap(draft.takeEnrollment())
+        let id = GatewayID(endpoint: enrollment.origin)
+        addTeardownBlock { try await credentials.deleteCredential(for: id) }
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) }, recordStore: records)
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let sessionStore = GatewaySessionStore()
+        server.primeSession()
+        _ = try await sessionStore.lease(gatewayID: id) { SessionCookie(name: "hermes_session_at", value: "fixture-native-session") }
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(),
+            connectionFactory: { gateway, _ in
+                SingleGatewayConnection(gatewayID: gateway.id, displayName: gateway.displayName, endpoint: gateway.endpoint,
+                    transport: GatewayWebSocketTransport(baseURL: base,
+                        authentication: GatewayAuthenticator(gatewayID: gateway.id, strategy: gateway.authConfiguration.strategy,
+                            credentialStore: credentials, baseURL: base, urlSession: URLSession(configuration: .ephemeral), sessionStore: sessionStore), configuration: .standard))
+            }, health: TestHealthAccumulator(), gatewaySessionInvalidator: { id in await sessionStore.invalidate(gatewayID: id) }, pairingConnectionFactory: { gateway, lease in
+                SingleGatewayConnection(gatewayID: gateway.id, displayName: gateway.displayName, endpoint: gateway.endpoint,
+                    transport: GatewayWebSocketTransport(baseURL: base,
+                        authentication: GatewayAuthenticator(gatewayID: gateway.id, strategy: gateway.authConfiguration.strategy,
+                            credentialStore: PairingCredentialStore(lease: lease, persistentStore: credentials), baseURL: base,
+                            urlSession: URLSession(configuration: .ephemeral), sessionStore: PairingSessionStore(credentialLease: lease)), configuration: .standard))
+            }, pairingCredentialStore: credentials)
+        let service = EmbeddedTailnetUITests.GuidedService()
+        let guide = GuidedPairingModel(service: service) { enrollment in
+            _ = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true)
+        }
+        await guide.begin(enrollment)
+        guide.trustConfirmed = true
+        XCTAssertTrue(server.paths.isEmpty, "No HTTP/password before embedded readiness")
+        let before = try await credentials.loadCredential(for: id)
+        XCTAssertNil(before)
+        await service.ready()
+        await guide.refresh()
+        XCTAssertEqual(guide.state, .connected)
+        XCTAssertEqual(environment.connectionStates[id], .connected)
+        let sharedAfterPairing = try await sessionStore.lease(gatewayID: id) {
+            SessionCookie(name: "hermes_session_at", value: "fresh-callback-fixture")
+        }
+        XCTAssertEqual(sharedAfterPairing.value, "fresh-callback-fixture", "Downstream roster connections must not inherit a stale shared cookie")
+        XCTAssertEqual(server.paths, ["/api/auth/providers", "/auth/password-login", "/api/auth/ws-ticket", "/api/ws"])
+        let stored = try await KeychainCredentialStore().loadCredential(for: id)
+        XCTAssertEqual(stored?.rawValue, "NOT-A-CREDENTIAL")
+        XCTAssertEqual(stored?.username, "fixture-user")
+        await environment.reconnect(to: id)
+        XCTAssertEqual(environment.connectionStates[id], .connected)
+        XCTAssertEqual(server.paths.filter { $0 == "/auth/password-login" }.count, 1, "Native session lease reused; no second password prompt/login")
+        for persistenceFails in [true, false] {
+            await records.setFailWrites(persistenceFails)
+            do {
+                try await environment.saveCredential(GatewayCredential(rawValue: "WRONG-FIXTURE", username: "fixture-user"), for: id)
+                XCTAssertFalse(persistenceFails, "Injected metadata write must fail after Keychain upsert")
+            } catch {
+                if !persistenceFails { throw error }
+                guard case GatewayRegistryError.recordStoreFailed = error else {
+                    XCTFail("Expected metadata persistence failure, not another error"); throw error
+                }
+            }
+            await environment.reconnect(to: id)
+            XCTAssertNotEqual(environment.connectionStates[id], .connected, "Credential replacement must retire old cookies even when metadata persistence fails")
+            await records.setFailWrites(false)
+            try await environment.saveCredential(GatewayCredential(rawValue: "NOT-A-CREDENTIAL", username: "fixture-user"), for: id)
+            await environment.reconnect(to: id)
+            XCTAssertEqual(environment.connectionStates[id], .connected)
+        }
+        server.revoke()
+        await environment.reconnect(to: id)
+        XCTAssertNotEqual(environment.connectionStates[id], .connected)
+        await environment.disconnect(from: id)
+    }
+
+    func testNativePairingConnectionFailureRollsBackSavedCredential() async throws {
+        let credentials = InMemoryCredentialStore()
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) })
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(),
+            connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .failure(.authenticationRequired)) }, health: TestHealthAccumulator(),
+            pairingConnectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .failure(.authenticationRequired)) }, pairingCredentialStore: credentials)
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        do { _ = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true); XCTFail() } catch {}
+        let gateways = await registry.allGateways()
+        XCTAssertTrue(gateways.isEmpty)
+        let stored = try await credentials.loadCredential(for: GatewayID(endpoint: enrollment.origin))
+        XCTAssertNil(stored)
+    }
+
+    func testNativeSessionTokenWorksAndRejectedCredentialsNeverReportConnected() async throws {
+        for auth in [#"{"strategy":"sessionToken","token":"fixture-native-token"}"#, #"{"strategy":"sessionToken","token":"invalid-native-token"}"#, #"{"strategy":"usernamePassword","username":"fixture-user","password":"wrong-password"}"#] {
+            let server = try PairingWireFixture()
+            try await server.start()
+            defer { server.stop() }
+            let base = URL(string: "http://127.0.0.1:\(server.listeningPort)")!
+            let credentials = InMemoryCredentialStore()
+            let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) })
+            let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+            let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(),
+                connectionFactory: { gateway, _ in
+                    SingleGatewayConnection(gatewayID: gateway.id, displayName: gateway.displayName, endpoint: gateway.endpoint,
+                        transport: GatewayWebSocketTransport(baseURL: base, authentication: GatewayAuthenticator(gatewayID: gateway.id,
+                            strategy: gateway.authConfiguration.strategy, credentialStore: credentials, baseURL: base, urlSession: URLSession(configuration: .ephemeral)), configuration: .standard))
+                }, health: TestHealthAccumulator(), pairingConnectionFactory: { gateway, lease in
+                    SingleGatewayConnection(gatewayID: gateway.id, displayName: gateway.displayName, endpoint: gateway.endpoint,
+                        transport: GatewayWebSocketTransport(baseURL: base, authentication: GatewayAuthenticator(gatewayID: gateway.id,
+                            strategy: gateway.authConfiguration.strategy, credentialStore: PairingCredentialStore(lease: lease, persistentStore: credentials),
+                            baseURL: base, urlSession: URLSession(configuration: .ephemeral)), configuration: .standard))
+                }, pairingCredentialStore: credentials)
+            let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr(auth: auth))
+            if auth.contains("fixture-native-token") {
+                let id = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true)
+                XCTAssertEqual(environment.connectionStates[id], .connected)
+                XCTAssertEqual(server.paths, ["/api/auth/ws-ticket", "/api/ws"])
+                await environment.disconnect(from: id)
+            } else {
+                do { _ = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true); XCTFail("Invalid native credential accepted") }
+                catch { XCTAssertEqual(error as? FleetPairingError, .rejected) }
+                let stored = try await credentials.loadCredential(for: GatewayID(endpoint: enrollment.origin))
+                XCTAssertNil(stored)
+                XCTAssertFalse(server.paths.contains("/api/ws"))
+            }
+        }
+    }
+
+    func testPendingPairingIsNotPersistedOrRestoredBeforeVerification() async throws {
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let id = GatewayID(endpoint: enrollment.origin)
+        let credentials = InMemoryCredentialStore()
+        let cache = try SwiftDataCacheStore.makeInMemory()
+        let gate = PairingGateConnection(gatewayID: id)
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { _, _ in gate }, recordStore: cache)
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: cache, sessionList: TestSessionList(), connectionFactory: { _, _ in gate }, health: TestHealthAccumulator(), pairingConnectionFactory: { _, _ in gate }, pairingCredentialStore: credentials)
+        let task = Task { try await environment.completePairing(enrollment, confirmsTLSFirstUse: true) }
+        await gate.waitUntilConnecting()
+        let stored = try await credentials.loadCredential(for: id)
+        let records = try await cache.loadGatewayRecords()
+        XCTAssertNil(stored, "Pending credential must never reach durable store")
+        XCTAssertTrue(records.isEmpty, "No ordinary durable gateway before gateway.ready")
+        XCTAssertFalse(environment.isConnectionIntended(id), "Unverified pairing must not autoconnect")
+        let restarted = GatewayRegistryService(credentials: credentials, connectionFactory: { _, _ in gate }, recordStore: cache)
+        let restored = try await restarted.restorePersistedGateways()
+        XCTAssertTrue(restored.isEmpty, "A restart at this checkpoint must restore nothing")
+        task.cancel()
+        await gate.release()
+        do { _ = try await task.value; XCTFail("Cancelled pairing succeeded") } catch {}
+    }
+
+    func testCancellationRevokesCredentialAndClosesOwnedSocketBeforeLateCallback() async throws {
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let id = GatewayID(endpoint: enrollment.origin)
+        let credentials = InMemoryCredentialStore()
+        let gate = PairingGateConnection(gatewayID: id)
+        let leaseBox = OSAllocatedUnfairLock<PairingCredentialLease?>(initialState: nil)
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { _, _ in gate })
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(),
+            connectionFactory: { _, _ in gate }, health: TestHealthAccumulator(), pairingConnectionFactory: { _, lease in
+                leaseBox.withLock { $0 = lease }; return gate
+            }, pairingCredentialStore: credentials)
+        let task = Task { try await environment.completePairing(enrollment, confirmsTLSFirstUse: true) }
+        await gate.waitUntilConnecting()
+        let lease = try XCTUnwrap(leaseBox.withLock { $0 })
+        task.cancel()
+        for _ in 0..<100 {
+            if await gate.disconnects > 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let disconnected = await gate.disconnects
+        XCTAssertGreaterThan(disconnected, 0, "Cancel must close the owned socket without waiting for connect to return")
+        let pending = try await lease.load(for: id, persistentStore: credentials)
+        XCTAssertNil(pending, "Cancel must revoke the transient secret before the late callback")
+        XCTAssertNil(environment.connectionStates[id])
+        await gate.release()
+        do { _ = try await task.value; XCTFail("Late callback must not commit") } catch {}
+        XCTAssertNil(environment.connectionStates[id])
+        XCTAssertFalse(environment.isConnectionIntended(id))
+        let saved = try await credentials.loadCredential(for: id)
+        XCTAssertNil(saved)
+    }
+
+    func testPairingRejectsExistingGatewayWithoutTouchingItsCredential() async throws {
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let id = GatewayID(endpoint: enrollment.origin)
+        let credentials = InMemoryCredentialStore()
+        let cache = try SwiftDataCacheStore.makeInMemory()
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) }, recordStore: cache)
+        _ = try await registry.addGateway(.init(displayName: "Existing", endpoint: enrollment.origin, authConfiguration: .init(strategy: .usernamePassword), transport: .embeddedTailscale))
+        let oldCredential = GatewayCredential(rawValue: "EXISTING-FIXTURE-ONLY", username: "existing")
+        try await registry.saveCredential(oldCredential, for: id)
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let factoryCalls = OSAllocatedUnfairLock(initialState: 0)
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: cache, sessionList: TestSessionList(),
+            connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) }, health: TestHealthAccumulator(),
+            pairingConnectionFactory: { gateway, _ in factoryCalls.withLock { $0 += 1 }; return TestConnection(gatewayID: gateway.id, result: .success(())) }, pairingCredentialStore: credentials)
+        do { _ = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true); XCTFail("Must reject duplicate") }
+        catch GatewayRegistryError.duplicate(let duplicateID) { XCTAssertEqual(duplicateID, id) }
+        let saved = try await credentials.loadCredential(for: id)
+        XCTAssertEqual(saved, oldCredential)
+        let existing = await registry.gateway(for: id)
+        XCTAssertEqual(existing?.displayName, "Existing")
+        XCTAssertEqual(factoryCalls.withLock { $0 }, 0)
+    }
+
+    func testPairingCredentialLeasePromotesToKeychainViewAndRevokesFallback() async throws {
+        let id = GatewayID(rawValue: "fixture")
+        let credentials = InMemoryCredentialStore()
+        let transient = GatewayCredential(rawValue: "TRANSIENT-FIXTURE")
+        let durable = GatewayCredential(rawValue: "DURABLE-FIXTURE")
+        let lease = PairingCredentialLease(gatewayID: id, credential: transient)
+        let view = PairingCredentialStore(lease: lease, persistentStore: credentials)
+        try await credentials.saveCredential(durable, for: id)
+        let pending = try await view.loadCredential(for: id)
+        XCTAssertEqual(pending, transient)
+        let foreign = try await view.loadCredential(for: GatewayID(rawValue: "other"))
+        XCTAssertNil(foreign)
+        try await lease.commit()
+        let committed = try await view.loadCredential(for: id)
+        XCTAssertEqual(committed, durable, "Committed connection must stop retaining/using its transient secret")
+        await lease.revoke()
+        let cancelled = try await view.loadCredential(for: id)
+        XCTAssertNil(cancelled, "Revocation also closes the durable fallback")
+        do { try await lease.commit(); XCTFail("Cannot revive revoked lease") } catch {}
+        do { try await view.saveCredential(transient, for: id); XCTFail("Read-only view") } catch {}
+        do { try await view.deleteCredential(for: id); XCTFail("Read-only view") } catch {}
+        let retained = try await credentials.loadCredential(for: id)
+        XCTAssertEqual(retained, durable)
+    }
+
+    func testBackgroundTeardownCancelsPendingPairingBeforePublication() async throws {
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let id = GatewayID(endpoint: enrollment.origin)
+        let credentials = InMemoryCredentialStore()
+        let gate = PairingGateConnection(gatewayID: id)
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { _, _ in gate })
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(), connectionFactory: { _, _ in gate }, health: TestHealthAccumulator(), pairingConnectionFactory: { _, _ in gate }, pairingCredentialStore: credentials)
+        let task = Task { try await environment.completePairing(enrollment, confirmsTLSFirstUse: true) }
+        await gate.waitUntilConnecting()
+        await environment.disconnectAll()
+        let disconnects = await gate.disconnects
+        XCTAssertGreaterThan(disconnects, 0)
+        await gate.release()
+        do { _ = try await task.value; XCTFail("Backgrounded pairing must not publish") } catch {}
+        XCTAssertNil(environment.connectionStates[id])
+        XCTAssertFalse(environment.isConnectionIntended(id))
+        let saved = try await credentials.loadCredential(for: id)
+        XCTAssertNil(saved)
+    }
+
+    func testOrphanedCredentialIsNotOverwrittenByPairing() async throws {
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let id = GatewayID(endpoint: enrollment.origin)
+        let credentials = InMemoryCredentialStore()
+        let old = GatewayCredential(rawValue: "ORPHAN-FIXTURE-ONLY")
+        try await credentials.saveCredential(old, for: id)
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) })
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(), connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) }, health: TestHealthAccumulator(), pairingConnectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) }, pairingCredentialStore: credentials)
+        do { _ = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true); XCTFail("Must preserve orphaned material") } catch {}
+        let saved = try await credentials.loadCredential(for: id)
+        XCTAssertEqual(saved, old)
+    }
+
+    func testFailedPairingPreservesPreexistingPinWithoutBlockingRetry() async throws {
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let id = GatewayID(endpoint: enrollment.origin)
+        let credentials = PairingSaveFailureStore()
+        let pins = PairingTestPinStore()
+        let originalPin = SPKIFingerprint(rawBytes: Array(repeating: 7, count: 32))
+        try await pins.savePin(originalPin, for: id)
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) }, pinStore: pins)
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), tlsPinStore: pins, sessionList: TestSessionList(), connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .success(())) }, health: TestHealthAccumulator(), pairingConnectionFactory: { gateway, _ in calls.withLock { $0 += 1 }; return TestConnection(gatewayID: gateway.id, result: .success(())) }, pairingCredentialStore: credentials)
+        do { _ = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true); XCTFail("Injected save failure") } catch {}
+        XCTAssertEqual(calls.withLock { $0 }, 1, "A TLS pin left by an interrupted first pairing must not permanently block a retry")
+        let pin = try await pins.loadPin(for: id)
+        XCTAssertEqual(pin, originalPin, "Rollback must not delete previously trusted material")
+        let row = await registry.gateway(for: id)
+        XCTAssertNil(row)
+    }
+
+    func testCancelledPairingAllowsQueuedSameIDReplacement() async throws {
+        try await exerciseQueuedReplacement(background: false)
+    }
+    func testBackgroundAlsoCancelsQueuedReplacement() async throws {
+        try await exerciseQueuedReplacement(background: true)
+    }
+    private func exerciseQueuedReplacement(background: Bool) async throws {
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let id = GatewayID(endpoint: enrollment.origin)
+        let credentials = InMemoryCredentialStore()
+        let gate = PairingGateConnection(gatewayID: id)
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { _, _ in gate })
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(), connectionFactory: { _, _ in gate }, health: TestHealthAccumulator(), pairingConnectionFactory: { gateway, _ in
+            let count = calls.withLock { value in value += 1; return value }
+            if count == 1 { return gate }
+            return TestConnection(gatewayID: gateway.id, result: .success(()))
+        }, pairingCredentialStore: credentials)
+        let first = Task { try await environment.completePairing(enrollment, confirmsTLSFirstUse: true) }
+        await gate.waitUntilConnecting()
+        var entered = false
+        let second = Task { entered = true; return try await environment.completePairing(enrollment, confirmsTLSFirstUse: true) }
+        while !entered { await Task.yield() }
+        if background { await environment.disconnectAll() } else { first.cancel() }
+        await gate.release()
+        do { _ = try await first.value; XCTFail("Old attempt must cancel") } catch {}
+        if background {
+            do { _ = try await second.value; XCTFail("Queued attempt must not outlive background teardown") } catch {}
+            XCTAssertNil(environment.connectionStates[id])
+            XCTAssertEqual(calls.withLock { $0 }, 1)
+        } else {
+            let connected = try await second.value
+            XCTAssertEqual(connected, id)
+            XCTAssertEqual(environment.connectionStates[id], .connected)
+            XCTAssertEqual(calls.withLock { $0 }, 2)
+        }
+    }
+
+    func testBackgroundFencesAllConcurrentPairingsBeforeAwaitingCleanup() async throws {
+        let firstEnrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let secondEnrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr().replacingOccurrences(of: "gateway.example", with: "second.example"))
+        let firstID = GatewayID(endpoint: firstEnrollment.origin), secondID = GatewayID(endpoint: secondEnrollment.origin)
+        let firstGate = PairingGateConnection(gatewayID: firstID, holdDisconnect: true)
+        let secondGate = PairingGateConnection(gatewayID: secondID, holdDisconnect: true)
+        let credentials = InMemoryCredentialStore()
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { _, _ in firstGate })
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(), connectionFactory: { _, _ in firstGate }, health: TestHealthAccumulator(), pairingConnectionFactory: { gateway, _ in gateway.id == firstID ? firstGate : secondGate }, pairingCredentialStore: credentials)
+        let first = Task { try await environment.completePairing(firstEnrollment, confirmsTLSFirstUse: true) }
+        let second = Task { try await environment.completePairing(secondEnrollment, confirmsTLSFirstUse: true) }
+        await firstGate.waitUntilConnecting(); await secondGate.waitUntilConnecting()
+        let teardown = Task { await environment.disconnectAll() }
+        for _ in 0..<100 {
+            let a = await firstGate.disconnects, b = await secondGate.disconnects
+            if a + b > 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await firstGate.release(); await secondGate.release()
+        for _ in 0..<100 {
+            if environment.connectionStates[firstID] == .connected || environment.connectionStates[secondID] == .connected { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(environment.connectionStates[firstID])
+        XCTAssertNil(environment.connectionStates[secondID])
+        await firstGate.releaseDisconnect(); await secondGate.releaseDisconnect()
+        await teardown.value
+        do { _ = try await first.value; XCTFail("First must cancel") } catch {}
+        do { _ = try await second.value; XCTFail("Second must cancel") } catch {}
+    }
+
+    func testTrustCleanupAttemptsApprovalResetEvenWhenPinDeletionFails() async throws {
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let credentials = InMemoryCredentialStore()
+        let pins = PairingFailingPinDeleteStore()
+        let approval = PairingApprovalStore()
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .failure(.unreachable)) })
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), tlsPinStore: pins, tlsApprovalStore: approval, sessionList: TestSessionList(), connectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .failure(.unreachable)) }, health: TestHealthAccumulator(), pairingConnectionFactory: { gateway, _ in TestConnection(gatewayID: gateway.id, result: .failure(.unreachable)) }, pairingCredentialStore: credentials)
+        do { _ = try await environment.completePairing(enrollment, confirmsTLSFirstUse: true); XCTFail("Injected failure") } catch {}
+        let approved = await approval.approved
+        XCTAssertFalse(approved, "Independent approval cleanup must run despite pin-store failure")
+    }
+    private actor PairingApprovalStore: TLSFirstUseApprovalStoring {
+        var approved = false
+        func approveFirstUse(for id: GatewayID) async throws { approved = true }
+        func isFirstUseApproved(for id: GatewayID) async throws -> Bool { approved }
+        func resetFirstUseApproval(for id: GatewayID) async throws { approved = false }
+    }
+    private actor PairingFailingPinDeleteStore: TLSPinStoring {
+        func loadPin(for id: GatewayID) async throws -> SPKIFingerprint? { nil }
+        func savePin(_ pin: SPKIFingerprint, for id: GatewayID) async throws {}
+        func deletePin(for id: GatewayID) async throws { throw PinStoreError.unexpectedStatus(-1) }
+    }
+
+    func testPartialCredentialClearRetiresAuthenticatedConnection() async throws {
+        let credentials = InMemoryCredentialStore()
+        let records = PairingFailingRecordStore()
+        let registry = GatewayRegistryService(credentials: credentials, connectionFactory: { gateway, _ in RecordingConnection(gatewayID: gateway.id) }, recordStore: records)
+        let enrollment = try PairingEnrollment.decode(EmbeddedTailnetUITests.qr())
+        let gateway = try await registry.addGateway(.init(displayName: "Fixture", endpoint: enrollment.origin, authConfiguration: .init(strategy: .usernamePassword)))
+        try await registry.saveCredential(enrollment.credential, for: gateway.id)
+        let connection = RecordingConnection(gatewayID: gateway.id)
+        let roster = FleetRosterService(registry: registry, credentials: credentials, sessionFactory: { gateway, _ in TestRosterSession(gatewayID: gateway.id, profiles: []) })
+        let environment = AppEnvironment(registry: registry, roster: roster, cache: try SwiftDataCacheStore.makeInMemory(), sessionList: TestSessionList(), connectionFactory: { _, _ in connection }, health: TestHealthAccumulator())
+        await environment.load(); await environment.connect(to: gateway.id)
+        await records.setFailWrites(true)
+        do { try await environment.clearCredential(for: gateway.id); XCTFail("Metadata persistence failure expected") }
+        catch {
+            guard case GatewayRegistryError.recordStoreFailed = error else {
+                XCTFail("Expected metadata persistence failure"); throw error
+            }
+        }
+        let stored = try await credentials.loadCredential(for: gateway.id)
+        XCTAssertNil(stored, "Credential delete has already succeeded")
+        XCTAssertGreaterThan(connection.disconnectCount, 0, "A partial mutation must still retire authenticated sockets")
+        XCTAssertNotEqual(environment.connectionStates[gateway.id], .connected)
+    }
+    private actor PairingFailingRecordStore: GatewayRecordStoring {
+        var records: [String: StoredGatewayRecord] = [:]
+        var failWrites = false
+        func setFailWrites(_ value: Bool) { failWrites = value }
+        func loadGatewayRecords() async throws -> [StoredGatewayRecord] { Array(records.values) }
+        func saveGatewayRecord(_ record: StoredGatewayRecord) async throws {
+            if failWrites { throw GatewayRegistryError.recordStoreFailed("fixture write failure") }
+            records[record.id] = record
+        }
+        func deleteGatewayRecord(id: GatewayID) async throws { records[id.rawValue] = nil }
+    }
+
+    private actor PairingSaveFailureStore: CredentialStoring {
+        func loadCredential(for id: GatewayID) async throws -> GatewayCredential? { nil }
+        func saveCredential(_ credential: GatewayCredential, for id: GatewayID) async throws { throw CredentialStoreError.storeUnavailable("fixture failure") }
+        func deleteCredential(for id: GatewayID) async throws {}
+    }
+    private actor PairingTestPinStore: TLSPinStoring {
+        var pins: [GatewayID: SPKIFingerprint] = [:]
+        func loadPin(for id: GatewayID) async throws -> SPKIFingerprint? { pins[id] }
+        func savePin(_ pin: SPKIFingerprint, for id: GatewayID) async throws { pins[id] = pin }
+        func deletePin(for id: GatewayID) async throws { pins[id] = nil }
+    }
+
+    private actor PairingGateConnection: GatewayConnectivityProviding {
+        nonisolated let gatewayID: GatewayID
+        nonisolated var status: GatewayStatus { .online }
+        var started = false
+        var readyWaiter: CheckedContinuation<Void, Never>?
+        var connectWaiter: CheckedContinuation<Void, Never>?
+        var disconnects = 0
+        var holdDisconnect: Bool
+        var disconnectWaiter: CheckedContinuation<Void, Never>?
+        init(gatewayID: GatewayID, holdDisconnect: Bool = false) { self.gatewayID = gatewayID; self.holdDisconnect = holdDisconnect }
+        func connect() async throws {
+            started = true
+            await withCheckedContinuation { continuation in
+                connectWaiter = continuation
+                readyWaiter?.resume(); readyWaiter = nil
+            }
+        }
+        func waitUntilConnecting() async {
+            if started { return }
+            await withCheckedContinuation { readyWaiter = $0 }
+        }
+        func release() { connectWaiter?.resume(); connectWaiter = nil }
+        func disconnect() async {
+            disconnects += 1
+            if holdDisconnect && disconnects == 1 { await withCheckedContinuation { disconnectWaiter = $0 } }
+        }
+        func releaseDisconnect() { holdDisconnect = false; disconnectWaiter?.resume(); disconnectWaiter = nil }
+        func adoptedReady() async -> GatewayReadyAdoption? { nil }
+        func currentGateway() async -> FleetGateway { FleetGateway(id: gatewayID, displayName: "Fixture") }
+    }
 
     // MARK: Fixture seams
 
@@ -1048,5 +1516,121 @@ final class AppEnvironmentTests: XCTestCase {
         await environment.loadRooms()
         XCTAssertTrue(environment.canCreateRooms(on: gatewayID),
                       "unprobed gateway with an advertising hosted room keeps the legacy path")
+    }
+}
+
+
+/// A real bounded HTTP + RFC6455 fixture. Authentication is checked by the
+/// receiving server, not by a mocked client response or a no-op connect.
+private final class PairingWireFixture: @unchecked Sendable {
+    private struct State {
+        var paths: [String] = []
+        var connections: [NWConnection] = []
+        var paired = false
+        var revoked = false
+        var ticket = false
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    private let listener: NWListener
+    var listeningPort: UInt16 { listener.port!.rawValue }
+    var paths: [String] { state.withLock { $0.paths } }
+    init() throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        listener = try NWListener(using: parameters)
+    }
+    func start() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            listener.stateUpdateHandler = { state in
+                if case .ready = state { continuation.resume() }
+                if case .failed(let error) = state { continuation.resume(throwing: error) }
+            }
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { return }
+                self.state.withLock { $0.connections.append(connection) }
+                connection.start(queue: .global())
+                self.receive(connection, buffer: Data())
+            }
+            listener.start(queue: .global())
+        }
+    }
+    func primeSession() { state.withLock { $0.paired = true } }
+    func revoke() {
+        state.withLock { $0.paired = false; $0.ticket = false; $0.revoked = true }
+        state.withLock { $0.connections }.forEach { $0.cancel() }
+    }
+    func stop() {
+        listener.cancel()
+        state.withLock { $0.connections }.forEach { $0.cancel() }
+    }
+    private func receive(_ connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] bytes, _, ended, error in
+            guard let self else { return }
+            var data = buffer
+            data.append(bytes ?? Data())
+            guard data.count <= 16384, error == nil else { connection.cancel(); return }
+            if let range = data.range(of: Data("\r\n\r\n".utf8)),
+               let header = String(data: data[..<range.lowerBound], encoding: .utf8) {
+                let lines = header.components(separatedBy: "\r\n")
+                let request = lines[0].split(separator: " ")
+                var headers: [String: String] = [:]
+                for line in lines.dropFirst() {
+                    let pair = line.split(separator: ":", maxSplits: 1)
+                    if pair.count == 2 { headers[String(pair[0]).lowercased()] = pair[1].trimmingCharacters(in: .whitespaces) }
+                }
+                let length = Int(headers["content-length"] ?? "0") ?? 0
+                guard data.count >= range.upperBound + length else {
+                    self.receive(connection, buffer: data); return
+                }
+                guard request.count == 3 else { connection.cancel(); return }
+                self.respond(connection, method: String(request[0]), target: String(request[1]), headers: headers,
+                    body: Data(data[range.upperBound..<(range.upperBound + length)]))
+            } else if !ended { self.receive(connection, buffer: data) }
+        }
+    }
+    private func respond(_ connection: NWConnection, method: String, target: String, headers: [String: String], body: Data) {
+        let url = URL(string: "http://fixture" + target)!
+        let path = url.path
+        state.withLock { $0.paths.append(path) }
+        var payload = "{}"
+        var allowed = false
+        var extraHeaders = ""
+        if path == "/api/auth/providers", method == "GET" {
+            allowed = true
+            payload = #"{"providers":[{"name":"basic","supports_password":true}]}"#
+        } else if path == "/auth/password-login", method == "POST", !state.withLock({ $0.revoked }),
+                  let object = try? JSONSerialization.jsonObject(with: body) as? [String: String],
+                  object["provider"] == "basic", object["username"] == "fixture-user", object["password"] == "NOT-A-CREDENTIAL" {
+            allowed = true
+            state.withLock { $0.paired = true }
+            extraHeaders = "Set-Cookie: hermes_session_at=fixture-native-session; HttpOnly; Path=/\r\n"
+            payload = #"{"ok":true,"next":"/"}"#
+        } else if path == "/api/auth/ws-ticket", method == "POST", !state.withLock({ $0.revoked }),
+                  (state.withLock({ $0.paired }) && headers["cookie"] == "hermes_session_at=fixture-native-session") || headers["x-hermes-session-token"] == "fixture-native-token" {
+            allowed = true
+            state.withLock { $0.ticket = true }
+            payload = #"{"ticket":"fixture-single-use-ticket","ttl_seconds":30}"#
+        } else if path == "/api/ws", method == "GET",
+                  URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "ticket", value: "fixture-single-use-ticket")) == true,
+                  let key = headers["sec-websocket-key"] {
+            let consumed = state.withLock { value in
+                guard value.ticket else { return false }
+                value.ticket = false
+                return true
+            }
+            if consumed {
+                let accept = Data(Insecure.SHA1.hash(data: Data((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8))).base64EncodedString()
+                var response = Data("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n".utf8)
+                let ready = Data(ConversationFixtureLoopTests.readyFrame().utf8)
+                response.append(contentsOf: [0x81, 126, UInt8(ready.count >> 8), UInt8(ready.count & 255)])
+                response.append(ready)
+                connection.send(content: response, completion: .contentProcessed { _ in })
+                return
+            }
+        }
+        let content = Data(payload.utf8)
+        var response = Data("HTTP/1.1 \(allowed ? 200 : 401) Result\r\n\(extraHeaders)Content-Type: application/json\r\nContent-Length: \(content.count)\r\nConnection: close\r\n\r\n".utf8)
+        response.append(content)
+        connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
     }
 }

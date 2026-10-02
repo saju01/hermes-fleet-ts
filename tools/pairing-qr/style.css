@@ -1,0 +1,9 @@
+html { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; background: #f3f5f7; color: #162337; }
+body { margin: 0; } main { max-width: 760px; padding: 24px; margin: auto; }
+h1 { margin-bottom: 4px; } .warning { border-left: 4px solid #945700; background: #fff0d5; padding: 12px; }
+label { display: block; font-weight: 600; margin-top: 14px; }
+input:not([type=checkbox]), select { box-sizing: border-box; width: 100%; padding: 10px; font: inherit; border: 1px solid #667085; border-radius: 4px; }
+.ack { font-weight: 400; } button { font: inherit; padding: 10px 16px; margin: 18px 12px 4px 0; cursor: pointer; }
+canvas { display: block; max-width: 100%; height: auto; image-rendering: pixelated; margin: 20px auto; }
+[hidden] { display: none !important; } #status { min-height: 1.5em; }
+@media print { body { display: none !important; } }

@@ -3,73 +3,79 @@ import Foundation
 /// Agent setup prompt shown from Settings ▸ Set Up Another Server and from
 /// the first-run onboarding gate (zero configured gateways).
 ///
-/// The prompt is versioned with the app. Bump `version` whenever the mission
-/// shape changes. Tests pin its semantic guarantees (OS detection, non-
-/// destructive inspection, supported gateway setup, secure connectivity,
-/// credential hygiene, end-to-end verification, concise reply) and its
-/// neutrality (no operating system, distribution channel, or networking
-/// vendor is prescribed) rather than exact prose.
+/// Versioned Fleet TS mission: private native-auth pairing through the
+/// Fleet-owned embedded network. The display client and selected backend are
+/// distinct; no deployment-specific identifiers or credentials belong here.
 public enum OnboardingPrompt {
 
-    /// Current prompt revision. Version 4 is universal: it tells the user's
-    /// Hermes Agent to DETECT its environment (OS, install, network) instead
-    /// of assuming one, and prepares the machine's Hermes gateway for the
-    /// iPhone app — it never assumes how the app itself was installed.
-    public static let version: Int = 4
+    /// Revision 6 uses existing native Hermes auth after embedded tailnet readiness.
+    public static let version: Int = 6
 
-    /// Full copyable setup prompt.
+    /// Full copyable setup prompt; both app surfaces use this same value.
     public static let text: String = """
-        I'm setting up Hermes Fleet, the iPhone app for controlling my Hermes \
-        machines. Prepare THIS computer's Hermes gateway so my phone can \
-        connect, then reply with exactly what I need.
+        I'm setting up Hermes Fleet TS with my existing connected/selected Hermes \
+        gateway. Confirm the selected gateway. My Mac/private portal is only the \
+        trusted display; keep a remote-UI-only client remote — never install or \
+        start a backend on my Mac.
 
-        1. Inspect first: detect this machine's operating system, how Hermes \
-        is installed and launched, its version, any existing gateway or \
-        remote-access configuration, and any existing secure networking (VPN, \
-        overlay network, tunnel, reverse proxy). Preserve working \
-        configuration — don't reinstall or replace anything that already works.
-        2. Gateway: determine the gateway/server interface for remote control \
-        that my installed Hermes version supports, using its current \
-        documentation. Prefer existing supported configuration; don't invent \
-        endpoints. If this Hermes version can't support a phone client, tell \
-        me what must change before modifying anything.
-        3. Network: my iPhone must reach the gateway securely. Choose the \
-        safest option that fits what's already here — an existing HTTPS \
-        endpoint, private network, or tunnel. Don't enroll me in any new \
-        third-party service that creates an account or public exposure \
-        without asking, and don't alter existing routes or firewalls.
-        4. Credentials: create or reuse a scoped credential for Hermes \
-        Fleet — least privilege. Never print it into logs, never commit it \
-        to source control, don't overwrite unrelated secrets.
-        5. Verify end-to-end: confirm the endpoint answers an authenticated \
-        request from the same network path my phone will use — not just a \
-        local process check.
-        6. Reply with exactly: the URL, the username, the password (or the \
-        pairing steps I need instead), and one line on which connection \
-        method you chose.
+        If this arrives via Telegram or another chat, stop: tell me to paste this \
+        same prompt into Hermes on my Mac or private portal. Never return a URL plus \
+        password, never post a secret QR in chat, and don't ask me to manually \
+        configure fields. Never ask for secrets in chat.
 
-        Hermes Fleet is already installed on my phone — don't try to install \
-        or update the iPhone app.
+        1. Inspect first: detect the selected backend's operating system, Hermes \
+        version, gateway/server interface, auth, and network. Preserve working \
+        configuration, existing passwords, routes, firewalls, and ACLs; don't \
+        reinstall. Ask which existing gateway if ambiguous, where to display the \
+        private QR, or about tailnet/node enrollment only if not discoverable: \
+        one decision at a time, no long questionnaire.
+        2. Reuse the existing HTTPS endpoint. No new broker, port, listener, backend \
+        plugin, restart, or route/ACL changes are needed. Check current documentation \
+        and installed code: setup capability means standard login support, not a \
+        proprietary pairing endpoint. Prefer identity-only auth only when actual \
+        Hermes support is verified; reachability alone is insufficient. Otherwise \
+        use a supported existing session token or username/password; don't invent \
+        endpoints or credentials or require server-issued grants.
+        3. My iPhone must reach the gateway securely. The recommended/default is \
+        Fleet-owned embedded Tailscale, not the system VPN, with automatic transport \
+        selection. Confirm alternatives only if I request them; no silent system-VPN \
+        fallback. Guide official browser sign-in/device approval only if needed. \
+        Don't enroll me in any new third-party service or create public exposure.
+        4. Prefer scoped, revocable credentials with least privilege where supported; \
+        otherwise use the existing login. Prefer single-use/device-locked pairing \
+        only if the existing endpoint genuinely supports it; offline rendering \
+        cannot enforce it; otherwise retain the existing login flow. Use a protected \
+        local form and bundled/offline QR renderer: no extra service, no network \
+        transmission or browser storage. Explain, then locally display the private \
+        QR: A reusable credential QR is reusable, not single-use or automatically \
+        expiring. No universal Tailscale admin keys or another app's node state. \
+        No credentials/QRs in model context, logs, source control, terminal output, \
+        screenshots, analytics, or clipboard exports; don't overwrite unrelated secrets.
+        5. Scan in Fleet: the QR automatically fills Fleet's Authentication section \
+        and selects embedded transport. Fleet waits for real Tailscale readiness, \
+        then automatically performs native Hermes login and the authenticated \
+        WebSocket handshake: no additional auth action or credential entry, no \
+        separate Hermes password to type. Wrong or revoked credentials may require \
+        correction; don't loop or bypass auth. Clear pending credentials on \
+        cancel/failure/completion; save successful login in Keychain.
+        6. Preserve exact-origin routing and TLS verification; never silently change \
+        trust. Verify end-to-end: authenticated HTTP and authenticated WebSocket on \
+        the same network path my phone will use, not just a local process check. \
+        Report verified status, transport, blockers, and phone-side checks still pending.
+
+        Fleet TS is already installed on my phone — don't try to install or update \
+        the iPhone app.
         """
 
-    /// Semantic guarantees — each group of phrases must be present so copy
-    /// edits cannot silently drop a required mission leg.
+    /// Required mission legs; independent tests also guard ordering and unsafe fallbacks.
     public static let missionKeywords: [[String]] = [
-        // 1. Inspect first — detect, don't assume.
-        ["detect", "operating system"],
-        // Preserve existing state; non-destructive.
-        ["Preserve working configuration"],
-        // 2. Supported gateway from current documentation.
-        ["supported", "documentation"],
-        // 3. Secure phone-reachable connectivity, chosen from existing
-        //    infrastructure; no unilateral third-party enrollment.
-        ["iPhone must reach the gateway securely", "safest"],
-        // 4. Scoped least-privilege credential with hygiene.
-        ["scoped", "least privilege"],
-        // 5. End-to-end verification from the phone's network path.
-        ["same network path my phone will use"],
-        // 6. Concise reply with exactly the connection values.
-        ["the URL", "the username", "the password"],
+        ["detect", "operating system", "existing connected/selected Hermes gateway"],
+        ["Preserve working configuration", "existing passwords", "ACLs"],
+        ["supported", "documentation", "standard login support"],
+        ["Fleet-owned embedded Tailscale", "automatic transport selection"],
+        ["scoped", "least privilege", "existing session token or username/password"],
+        ["authenticated HTTP", "authenticated WebSocket"],
+        ["private QR", "no separate Hermes password", "reusable credential QR is reusable"],
     ]
 
     /// Substrings that must never appear in the prompt: no credentials,
@@ -81,14 +87,12 @@ public enum OnboardingPrompt {
         "password:", "token:",
     ]
 
-    /// Environment- or maintainer-specific terms the universal prompt must
-    /// NOT bake in as assumptions. The prompt may name an option generically
-    /// ("a tunnel", "an overlay network") but never prescribes a vendor,
-    /// OS, or distribution channel. Case-sensitive by design: "macOS" and
-    /// "Tailscale" are vendor names; lowercase generic words are allowed.
+    /// Deployment-specific assumptions remain forbidden. Mac/private portal is
+    /// the requested display surface and Tailscale is the Fleet TS product transport,
+    /// not an assumption about the backend operating system or a user account.
     public static let forbiddenAssumptions: [String] = [
-        "sideload", "Wi-Fi", "TestFlight", "Mac", "macOS", "Windows",
-        "Linux", "tailnet", "Tailscale", "Xcode", "Homebrew", "systemd",
+        "sideload", "Wi-Fi", "TestFlight", "macOS", "Windows",
+        "Linux", "Xcode", "Homebrew", "systemd",
         "launchd", "PowerShell", "Cloudflare", "dogfood", "Tony",
         "Apple Squad",
     ]
@@ -103,8 +107,7 @@ public enum OnboardingPrompt {
         forbiddenSubstrings.allSatisfy { !text.contains($0) }
     }
 
-    /// Neutrality check exercised by tests: no environment assumption is
-    /// baked into the prompt.
+    /// No backend OS, distribution channel, or private deployment is assumed.
     public static func containsNoEnvironmentAssumptions() -> Bool {
         forbiddenAssumptions.allSatisfy { !text.contains($0) }
     }

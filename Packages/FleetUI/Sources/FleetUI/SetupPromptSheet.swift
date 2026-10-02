@@ -55,7 +55,8 @@ public struct SetupPromptSheet: View {
     private var copySection: some View {
         Section {
             VStack(alignment: .leading, spacing: FleetTheme.spacingMd) {
-                Text("Send this prompt to Hermes on the computer you want to add. It will inspect that machine, prepare its gateway connection, choose a secure network path, and reply with the values to enter in Add Gateway.")
+                Text("Open Hermes on Mac/private portal for your selected gateway. Privately scan its existing token or username/password QR. Fleet uses embedded Tailscale. After Tailscale authorization, Hermes login is automatic through the existing HTTPS endpoint — no new service or port. Treat the reusable QR like its credential.")
+                    .accessibilityIdentifier("fleet.setup-prompt.instructions")
                     .font(.subheadline)
                     .foregroundStyle(theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -64,7 +65,7 @@ public struct SetupPromptSheet: View {
                     copyPrompt()
                 } label: {
                     Label(
-                        copyConfirmed ? "Copied — paste it in chat" : "Copy setup prompt",
+                        copyConfirmed ? "Copied — open Hermes on Mac/private portal" : "Copy setup prompt",
                         systemImage: copyConfirmed ? "checkmark.circle.fill" : "doc.on.doc"
                     )
                     .frame(maxWidth: .infinity)
@@ -76,7 +77,7 @@ public struct SetupPromptSheet: View {
 
                 ShareLink(
                     item: OnboardingPrompt.text,
-                    subject: Text("Hermes Fleet — server setup prompt")
+                    subject: Text("Hermes Fleet TS — private pairing setup")
                 ) {
                     Label("Share…", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
@@ -99,7 +100,7 @@ public struct SetupPromptSheet: View {
             }
             .listRowBackground(Color.clear)
         } footer: {
-            Text("v\(OnboardingPrompt.version) — no secrets inside; your Hermes fills in the real values.")
+            Text("v\(OnboardingPrompt.version) — no secrets in this prompt; keep credential QRs private.")
         }
     }
 

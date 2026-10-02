@@ -14,6 +14,66 @@ final class F2PairingApplyTests: XCTestCase {
         return store
     }
 
+    private func v2QR(origin: String = "https://gateway.example.ts.net", auth: String = #"{"strategy":"usernamePassword","username":"fixture-user","password":"NOT-A-CREDENTIAL"}"#) -> String {
+        """
+        {"v":2,"kind":"hermes-fleet-ts","url":"\(origin)","name":"Fixture","transport":"embeddedTailscale","auth":\(auth)}
+        """
+    }
+
+    func testV2NativePasswordScanSelectsEmbeddedTransportWithoutManualSecretFields() throws {
+        let store = makeStoreWithAddDraft()
+        try store.applyPairing(v2QR())
+        XCTAssertEqual(store.transport, .embeddedTailscale)
+        XCTAssertEqual(store.strategy, .usernamePassword)
+        XCTAssertEqual(store.endpointText, "https://gateway.example.ts.net")
+        XCTAssertEqual(store.displayName, "Fixture")
+        XCTAssertEqual(store.usernameText, "fixture-user")
+        XCTAssertEqual(store.passwordText, "NOT-A-CREDENTIAL", "QR populates existing native Authentication fields")
+        XCTAssertEqual(store.tokenText, "")
+        XCTAssertFalse(store.confirmsTLSFirstUse)
+        XCTAssertNotNil(store.pendingEnrollment)
+    }
+
+    func testV2NativeTokenAndExplicitPortsRemainSupported() throws {
+        let store = makeStoreWithAddDraft()
+        for origin in ["https://gateway.example.ts.net", "https://gateway.example.ts.net:443", "https://gateway.example.ts.net:9443"] {
+            try store.applyPairing(v2QR(origin: origin, auth: #"{"strategy":"sessionToken","token":"NOT-A-CREDENTIAL"}"#))
+            XCTAssertEqual(store.strategy, .sessionToken)
+            XCTAssertEqual(store.endpointText, origin)
+            XCTAssertEqual(store.transport, .embeddedTailscale)
+        }
+    }
+
+    func testV2RejectsUnsafeOriginsAndMixedAuthenticationWithoutChangingDraft() throws {
+        let store = makeStoreWithAddDraft()
+        store.displayName = "Kept"
+        for origin in ["http://gateway.example.ts.net", "https://gateway.example.invalid", "https://u:p@gateway.example.ts.net", "https://gateway.example.ts.net/path", "https://gateway.example.ts.net?x=y", "https://gateway.example.ts.net#secret", "https://gateway.example.ts.net:0", "https://gateway.example.ts.net:65536", "https://gateway..ts.net"] {
+            XCTAssertThrowsError(try store.applyPairing(v2QR(origin: origin)))
+            XCTAssertEqual(store.displayName, "Kept")
+        }
+        for auth in [#"{"strategy":"none"}"#, #"{"strategy":"sessionToken","token":""}"#, #"{"strategy":"usernamePassword","username":"u","password":""}"#, #"{"strategy":"sessionToken","token":"x","username":"u","password":"p"}"#] {
+            XCTAssertThrowsError(try store.applyPairing(v2QR(auth: auth)))
+        }
+    }
+
+    func testGuidanceTakesCredentialsOnceAndCancelOrLegacyScanClearsThem() throws {
+        let store = makeStoreWithAddDraft()
+        try store.applyPairing(v2QR())
+        let enrollment = try XCTUnwrap(store.takeEnrollment())
+        XCTAssertNil(store.pendingEnrollment)
+        XCTAssertNil(store.takeEnrollment())
+        XCTAssertEqual(store.pairingOrigin, enrollment.origin)
+        store.clear()
+        XCTAssertNil(store.pairingOrigin)
+        try store.applyPairing(v2QR())
+        try store.applyPairing(PairingPayload(url: "https://gateway.example.invalid", username: "u", password: "p").encoded())
+        XCTAssertNil(store.pendingEnrollment)
+        XCTAssertNil(store.pairingOrigin)
+        try store.applyPairing(v2QR())
+        store.begin(pendingSheet: .add, initial: nil)
+        XCTAssertNil(store.pendingEnrollment)
+    }
+
     // MARK: Happy path — one scan fills the form
 
     func testApplyPairingFillsEntireDraft() throws {

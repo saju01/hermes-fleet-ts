@@ -100,7 +100,8 @@ public struct GatewaysView: View {
                     title: "Add Gateway",
                     saveButton: "Add",
                     initial: nil,
-                    draftStore: environment.gatewayFormDraft
+                    draftStore: environment.gatewayFormDraft,
+                    environment: environment
                 ) { registration, credential, confirmsTLSFirstUse in
                     _ = try await environment.addGateway(
                         registration,
@@ -112,7 +113,8 @@ public struct GatewaysView: View {
                     title: "Edit Gateway",
                     saveButton: "Save",
                     initial: gateway,
-                    draftStore: environment.gatewayFormDraft
+                    draftStore: environment.gatewayFormDraft,
+                    environment: environment
                 ) { registration, credential, confirmsTLSFirstUse in
                     // Apply the edited display name / endpoint / strategy.
                     _ = try await environment.updateGateway(

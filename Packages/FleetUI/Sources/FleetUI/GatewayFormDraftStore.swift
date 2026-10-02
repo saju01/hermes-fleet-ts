@@ -54,6 +54,10 @@ public final class GatewayFormDraftStore {
     /// Start a fresh draft, seeding non-secret fields from an existing gateway
     /// (edit prefill). Secrets always start empty.
     public func begin(pendingSheet: PendingSheet, initial: FleetGateway?) {
+        guidedPairing?.cancel()
+        guidedPairing = nil
+        pairingOrigin = nil
+        pendingEnrollment = nil
         self.pendingSheet = pendingSheet
         displayName = initial?.displayName ?? ""
         endpointText = initial?.endpoint?.absoluteString ?? ""
@@ -71,6 +75,10 @@ public final class GatewayFormDraftStore {
     /// secret fields too so credential material never lingers after the sheet
     /// closes.
     public func clear() {
+        guidedPairing?.cancel()
+        guidedPairing = nil
+        pairingOrigin = nil
+        pendingEnrollment = nil
         pendingSheet = nil
         displayName = ""
         endpointText = ""
@@ -100,12 +108,44 @@ public final class GatewayFormDraftStore {
     /// SECURITY: the payload's secret is placed ONLY in the in-memory draft
     /// (same as typing) — never logged, never persisted. On Save it flows to
     /// the Keychain via the existing seam; nothing is stored until then.
+    public private(set) var pairingOrigin: URL?
+    public func takeEnrollment() -> PairingEnrollment? {
+        defer { pendingEnrollment = nil; usernameText = ""; passwordText = ""; tokenText = "" }
+        return pendingEnrollment
+    }
+    public var guidedPairing: GuidedPairingModel?
+    public private(set) var pendingEnrollment: PairingEnrollment?
+
     public func applyPairing(_ scanned: String) throws {
+        if let data = scanned.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           object["v"] as? Int == 2 {
+            let enrollment = try PairingEnrollment.decode(scanned)
+            guidedPairing?.cancel()
+            guidedPairing = nil
+            pairingOrigin = enrollment.origin
+            pendingEnrollment = enrollment
+            displayName = enrollment.name
+            endpointText = enrollment.origin.absoluteString
+            transport = .embeddedTailscale
+            strategy = enrollment.strategy
+            tokenText = enrollment.strategy == .sessionToken ? enrollment.credential.rawValue : ""
+            usernameText = enrollment.credential.username ?? ""
+            passwordText = enrollment.strategy == .usernamePassword ? enrollment.credential.rawValue : ""
+            confirmsTLSFirstUse = false
+            confirmsCleartextSend = false
+            saveError = nil
+            return
+        }
         let payload = try PairingPayload.decode(scanned)
         guard let url = URL(string: payload.url) else {
             throw GatewayRegistryError.invalidEndpoint
         }
         let origin = try GatewayEndpoint.normalizedOrigin(from: url)
+        guidedPairing?.cancel()
+        guidedPairing = nil
+        pairingOrigin = nil
+        pendingEnrollment = nil
         displayName = origin.host ?? "Gateway"
         endpointText = origin.absoluteString
         strategy = .usernamePassword

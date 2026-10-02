@@ -6,16 +6,9 @@ import FleetNetworking
 import FleetSecurity
 import FleetPersistence
 
-/// Universal setup-prompt content tests + first-run hydration state tests.
-///
-/// The prompt is a versioned artifact that ships with the app: these tests
-/// pin its SEMANTIC guarantees (OS/environment detection, non-destructive
-/// inspection, supported gateway setup, secure phone-reachable connectivity,
-/// credential hygiene, end-to-end verification, concise reply) and its
-/// NEUTRALITY (no OS, distribution channel, or networking vendor is
-/// prescribed — the prompt tells the executing Hermes to DETECT those).
-/// Silently dropping a mission leg or baking in an environment assumption
-/// fails the build.
+/// Fleet TS prompt contract plus existing first-run hydration regressions.
+/// Safety assertions are independent of production missionKeywords; UI tests
+/// exercise actual copy and canonical-preview equivalence across both doors.
 @MainActor
 final class OnboardingPromptTests: XCTestCase {
 
@@ -68,7 +61,7 @@ final class OnboardingPromptTests: XCTestCase {
     func testPromptRequiresSecurePhoneReachableConnectivity() {
         let text = OnboardingPrompt.text
         XCTAssertTrue(text.contains("iPhone must reach the gateway securely"))
-        XCTAssertTrue(text.contains("safest"))
+        XCTAssertTrue(text.contains("automatic transport selection"))
         XCTAssertTrue(text.contains("Don't enroll me in any new third-party service"))
     }
 
@@ -92,22 +85,94 @@ final class OnboardingPromptTests: XCTestCase {
         XCTAssertTrue(text.contains("not just a local process check"))
     }
 
-    /// Leg 6 — the reply returns exactly the connection information Fleet
-    /// needs, with a pairing alternative.
-    func testPromptReturnsConnectionInformationFleetNeeds() {
+    /// Chat is not a credential delivery surface; redirect to private pairing.
+    func testPromptRoutesChatToPrivateReusableCredentialQR() {
         let text = OnboardingPrompt.text
-        XCTAssertTrue(text.contains("Reply with exactly"))
-        XCTAssertTrue(text.contains("the URL"))
-        XCTAssertTrue(text.contains("the username"))
-        XCTAssertTrue(text.contains("the password"))
-        XCTAssertTrue(text.contains("pairing steps"))
+        for instruction in [
+            "Hermes Fleet TS", "Hermes on my Mac or private portal",
+            "Telegram or another chat", "paste this same prompt",
+            "locally display", "private QR", "existing login",
+            "Scan", "no separate Hermes password",
+            "Never return a URL plus password", "never post a secret QR in chat",
+            "don't ask me to manually configure fields", "Never ask for secrets in chat",
+            "protected local form", "bundled/offline QR renderer",
+            "no extra service", "no network transmission", "browser storage",
+            "model context", "terminal output", "screenshots", "clipboard exports",
+            "A reusable credential QR is reusable", "not single-use or automatically expiring",
+            "No universal Tailscale admin keys", "another app's node state",
+            "Clear pending credentials on cancel/failure/completion", "Keychain",
+            "Prefer single-use/device-locked pairing only if the existing endpoint genuinely supports it",
+            "offline rendering cannot enforce it", "otherwise retain the existing login flow"
+        ] {
+            XCTAssertTrue(text.contains(instruction), "Missing private-credential instruction: \(instruction)")
+        }
+        for obsolete in ["Reply with exactly: the URL", "short-lived, single-use QR",
+                         "no long-lived password in a QR", "Verify expiry, single-use redemption"] {
+            XCTAssertFalse(text.contains(obsolete), "Do not misrepresent reusable native credentials: \(obsolete)")
+        }
     }
 
-    // MARK: Neutrality — no environment assumptions baked in
+    func testPromptKeepsRemoteUISeparateFromSelectedBackend() {
+        let text = OnboardingPrompt.text
+        for instruction in ["existing connected/selected Hermes gateway",
+                            "Mac/private portal is only the trusted display",
+                            "remote-UI-only", "never install or start a backend on my Mac",
+                            "Confirm the selected gateway"] {
+            XCTAssertTrue(text.contains(instruction), "Missing remote-UI boundary: \(instruction)")
+        }
+        XCTAssertFalse(text.contains("THIS computer"))
+        XCTAssertFalse(text.contains("this machine's operating system"))
+    }
 
-    /// The prompt must not prescribe an operating system, distribution
-    /// channel, or networking vendor — and must not carry private
-    /// deployment jargon (dogfood/RC/maintainer names).
+    func testPromptUsesExistingNativeAuthAutomaticallyAfterTailnetReadiness() throws {
+        let text = OnboardingPrompt.text
+        for instruction in [
+            "Fleet-owned embedded Tailscale", "not the system VPN",
+            "automatic transport selection", "sign-in/device approval only if needed",
+            "existing passwords", "routes, firewalls, and ACLs",
+            "existing HTTPS endpoint", "standard login support, not a proprietary pairing endpoint",
+            "No new broker, port, listener, backend plugin, restart, or route/ACL changes",
+            "identity-only auth only when actual Hermes support is verified",
+            "reachability alone is insufficient", "existing session token or username/password",
+            "automatically fills Fleet's Authentication section",
+            "waits for real Tailscale readiness", "automatically performs native Hermes login",
+            "no additional auth action or credential entry", "Wrong or revoked credentials",
+            "authenticated HTTP", "authenticated WebSocket", "TLS verification",
+            "don't invent endpoints or credentials"
+        ] {
+            XCTAssertTrue(text.contains(instruction), "Missing direct-auth requirement: \(instruction)")
+        }
+        for obsolete in ["required server change", "pending server feature", "device-bound credential"] {
+            XCTAssertFalse(text.contains(obsolete), "Do not require a proprietary grant: \(obsolete)")
+        }
+        let ready = try XCTUnwrap(text.range(of: "waits for real Tailscale readiness"))
+        let nativeLogin = try XCTUnwrap(text.range(of: "automatically performs native Hermes login"))
+        XCTAssertLessThan(ready.lowerBound, nativeLogin.lowerBound)
+        let redirect = try XCTUnwrap(text.range(of: "Telegram or another chat"))
+        let inspect = try XCTUnwrap(text.range(of: "Inspect first"))
+        XCTAssertLessThan(redirect.lowerBound, inspect.lowerBound,
+                          "Chat must redirect before backend work or credential generation")
+        XCTAssertGreaterThanOrEqual(OnboardingPrompt.version, 6)
+    }
+
+    func testPromptAsksOnlyNecessaryDecisionsAfterInspection() throws {
+        let text = OnboardingPrompt.text
+        for instruction in ["recommended/default", "which existing gateway if ambiguous",
+                            "where to display the private QR", "tailnet/node enrollment",
+                            "only if not discoverable", "one decision at a time",
+                            "no long questionnaire", "alternatives only if I request them",
+                            "no silent system-VPN fallback"] {
+            XCTAssertTrue(text.contains(instruction), "Missing targeted-decision rule: \(instruction)")
+        }
+        let inspect = try XCTUnwrap(text.range(of: "Inspect first"))
+        let questions = try XCTUnwrap(text.range(of: "which existing gateway if ambiguous"))
+        XCTAssertLessThan(inspect.lowerBound, questions.lowerBound)
+    }
+
+    // MARK: No backend OS, install-channel, or private-deployment assumptions
+
+    /// Fleet TS prescribes its embedded transport and trusted display, not the
+    /// backend OS, distribution channel, or any private deployment details.
     func testPromptContainsNoEnvironmentAssumptions() {
         XCTAssertTrue(
             OnboardingPrompt.containsNoEnvironmentAssumptions(),
@@ -133,7 +198,7 @@ final class OnboardingPromptTests: XCTestCase {
     func testNoMaintainerOrPrivateDetails() {
         // Belt-and-braces beyond the forbidden lists: no maintainer identity,
         // host, or private address shape may appear — the prompt is written
-        // for a generic Hermes user (universal prompt, v4).
+        // for a generic Hermes user (Fleet TS prompt).
         let text = OnboardingPrompt.text
         for banned in ["tonysimons", "aiowa", "hermesfleet.gateway",
                        ".ts.net", "9120", "100.100.", "192.168."] {
@@ -145,8 +210,8 @@ final class OnboardingPromptTests: XCTestCase {
 
     func testPromptIsConcise() {
         // A copyable onboarding prompt: bounded so it stays paste-friendly.
-        XCTAssertLessThanOrEqual(OnboardingPrompt.wordCount, 300,
-                                 "prompt is \(OnboardingPrompt.wordCount) words — trim toward ~250")
+        XCTAssertLessThanOrEqual(OnboardingPrompt.wordCount, 550,
+                                 "prompt is \(OnboardingPrompt.wordCount) words — keep the secure pairing instructions paste-friendly")
         XCTAssertGreaterThan(OnboardingPrompt.wordCount, 100,
                              "prompt too short to cover the mission")
     }

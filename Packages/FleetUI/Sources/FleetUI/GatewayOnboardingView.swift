@@ -13,9 +13,9 @@ import UIKit
 /// no longer empty (the registry IS the onboarding state — no separate
 /// hasSeenOnboarding flag).
 ///
-/// One tap copies the versioned universal `OnboardingPrompt` for the user to
-/// send to Hermes on ANY computer they want to control (macOS, Windows, or
-/// Linux — the prompt tells that Hermes to detect its own environment).
+/// One tap copies the canonical Fleet TS prompt for a trusted Mac/private
+/// portal display connected to the selected backend. The prompt checks actual
+/// native login support before displaying a QR; the UI client remains remote-only.
 /// Experienced users can skip straight into the REAL Add-Gateway form
 /// (same draft + Keychain path as manual entry from the Gateways tab — no
 /// duplicate registration implementation), which also hosts the QR pairing
@@ -27,7 +27,7 @@ public struct GatewayOnboardingView: View {
     @Environment(\.fleetTheme) private var theme
     private let environment: AppEnvironment
 
-    /// What the user does after Hermes replies, per step.
+    /// Requested pairing journey; server support is checked, never assumed.
     private enum Step: Int, CaseIterable, Identifiable {
         case copy
         case send
@@ -39,22 +39,22 @@ public struct GatewayOnboardingView: View {
         var title: String {
             switch self {
             case .copy: return "Copy the setup prompt"
-            case .send: return "Send it to Hermes"
-            case .reply: return "Hermes replies with values"
-            case .enter: return "Enter them in Add Gateway"
+            case .send: return "Open Hermes on Mac/private portal"
+            case .reply: return "Display a private pairing QR"
+            case .enter: return "Scan and connect securely"
             }
         }
 
         var detail: String {
             switch self {
             case .copy:
-                return "Tap Copy, then paste the message into a chat with Hermes on the computer you want to add."
+                return "Tap Copy, then open Hermes on your Mac or private portal — not a messaging chat."
             case .send:
-                return "That Hermes inspects its machine, prepares its gateway connection, and picks a secure way for your phone to reach it."
+                return "Paste into the trusted UI connected to your selected gateway. A remote-only Mac client stays remote; no local backend is installed."
             case .reply:
-                return "It replies with exactly the URL, username, and password to use — nothing else needed."
+                return "Use the supported existing token or username/password in a protected local form on Mac/private portal. Display the reusable QR privately; treat it like the credential it contains."
             case .enter:
-                return "Come back here, open Add Gateway, and enter the values. Scanning a pairing code works too."
+                return "Scanning fills the Authentication section automatically. After Tailscale authorization, Fleet automatically logs in to Hermes — no extra auth action or credential entry. Complete official Tailscale sign-in or device approval only if needed."
             }
         }
 
@@ -138,7 +138,7 @@ public struct GatewayOnboardingView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(theme.highlight)
                 .accessibilityHidden(true)
-            Text("Hermes Fleet")
+            Text("Hermes Fleet TS")
                 .font(FleetTheme.titleFont)
                 .foregroundStyle(theme.highlight)
                 .accessibilityIdentifier("fleet.onboarding.title")
@@ -146,7 +146,8 @@ public struct GatewayOnboardingView: View {
                 .font(.headline)
                 .foregroundStyle(theme.textPrimary)
                 .accessibilityIdentifier("fleet.onboarding.headline")
-            Text("Fleet connects your iPhone to Hermes running on your computers. Send a setup prompt to Hermes on the computer you want to add — it will inspect that machine, choose a supported secure connection method, and return the information Fleet needs.")
+            Text("Open Hermes on Mac/private portal for your selected gateway. Privately scan its existing token or username/password QR. Fleet uses embedded Tailscale. After Tailscale authorization, Hermes login is automatic through the existing HTTPS endpoint — no new service or port. Treat the reusable QR like its credential.")
+                .accessibilityIdentifier("fleet.onboarding.instructions")
                 .font(FleetTheme.secondaryFont)
                 .foregroundStyle(theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -161,7 +162,7 @@ public struct GatewayOnboardingView: View {
                     copyPrompt()
                 } label: {
                     Label {
-                        Text(copyConfirmed ? "Copied — paste it in chat" : "Copy setup prompt")
+                        Text(copyConfirmed ? "Copied — open Hermes on Mac/private portal" : "Copy setup prompt")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                     } icon: {
@@ -272,7 +273,7 @@ public struct GatewayOnboardingView: View {
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("fleet.onboarding.prompt-text")
-                        Text("v\(OnboardingPrompt.version) — no secrets inside; your Hermes fills in the real values.")
+                        Text("v\(OnboardingPrompt.version) — no secrets in this prompt; keep credential QRs private.")
                             .font(.caption)
                             .foregroundStyle(theme.textSecondary)
                     }

@@ -142,6 +142,14 @@ public actor GatewayRegistryService: GatewayRegistryManaging {
     }
 
     public func removeGateway(_ id: GatewayID) async throws {
+        try await removeGateway(id, preservingTrust: false)
+    }
+
+    public func removeGatewayPreservingTrust(_ id: GatewayID) async throws {
+        try await removeGateway(id, preservingTrust: true)
+    }
+
+    private func removeGateway(_ id: GatewayID, preservingTrust: Bool) async throws {
         guard registry.gateway(for: id) != nil else {
             throw GatewayRegistryError.notFound(id)
         }
@@ -157,7 +165,7 @@ public actor GatewayRegistryService: GatewayRegistryManaging {
         // T3: retire the TLS pin with the credential — a removed gateway
         // must leave no orphaned trust material. Failures surface (same
         // P1-8 contract); missing pin is a no-op at the store level.
-        if let pinStore {
+        if !preservingTrust, let pinStore {
             do {
                 try await pinStore.deletePin(for: id)
             } catch {

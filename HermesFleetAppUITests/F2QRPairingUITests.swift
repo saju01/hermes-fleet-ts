@@ -16,6 +16,33 @@ final class F2QRPairingUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testV2ScanShowsGuidedEmbeddedEnrollmentWithoutPasswordOrManualSave() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["HERMES_FLEET_PAIRING_SIMULATED_SCAN"] = """
+        {"v":2,"kind":"hermes-fleet-ts","url":"https://gateway.example.ts.net","name":"Fixture","transport":"embeddedTailscale","auth":{"strategy":"usernamePassword","username":"fixture-user","password":"NOT-A-CREDENTIAL"}}
+        """
+        app.launch()
+        UITabNavigation.openGatewaysTab(app)
+        app.buttons["fleet.gateways.add"].tap()
+        let scan = app.buttons["fleet.gateways.form.scan"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 10))
+        scan.tap()
+        let simulate = app.buttons["fleet.gateways.scan.simulate"]
+        XCTAssertTrue(simulate.waitForExistence(timeout: 10))
+        simulate.tap()
+        XCTAssertTrue(app.staticTexts["fleet.pairing.origin"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["fleet.pairing.origin"].label, "https://gateway.example.ts.net")
+        XCTAssertFalse(app.textFields["fleet.gateways.form.endpoint"].exists)
+        XCTAssertFalse(app.secureTextFields["fleet.gateways.form.password"].exists)
+        XCTAssertFalse(app.secureTextFields["fleet.gateways.form.token"].exists)
+        XCTAssertFalse(app.buttons["fleet.gateways.form.save"].exists)
+        // The scripted simulator has no live node: never fake success.
+        XCTAssertTrue(app.staticTexts["fleet.pairing.unavailable"].exists)
+        app.buttons["fleet.gateways.form.cancel"].tap()
+        app.buttons["fleet.gateways.add"].tap()
+        XCTAssertTrue(app.textFields["fleet.gateways.form.endpoint"].waitForExistence(timeout: 10))
+    }
+
     /// C1 hardening: the scanner sheet must render its camera-denied
     /// recovery state — real copy + Open Settings — and never a dead
     /// spinner or a camera surface. Driven via the DEBUG-only

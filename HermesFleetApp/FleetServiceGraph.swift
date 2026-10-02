@@ -229,7 +229,12 @@ enum FleetServiceGraph {
             gatewaySessionInvalidatorAll: {
                 await FleetServiceGraph.sharedSessionStore.invalidateAll()
             },
-            embeddedTailnet: embeddedTailnet
+            embeddedTailnet: embeddedTailnet,
+            pairingConnectionFactory: { gateway, lease in
+                makeConnection(gateway: gateway,
+                    credentialStore: PairingCredentialStore(lease: lease, persistentStore: credentialStore),
+                    health: health, pinStore: pinStore, pairingSessionStore: PairingSessionStore(credentialLease: lease))
+            }, pairingCredentialStore: credentialStore
         )
     }
 
@@ -634,7 +639,8 @@ enum FleetServiceGraph {
         gateway: FleetGateway,
         credentialStore: any CredentialStoring,
         health: (any ConnectionHealthAccumulating)? = nil,
-        pinStore: (any SynchronousPinStoring)? = nil
+        pinStore: (any SynchronousPinStoring)? = nil,
+        pairingSessionStore: (any GatewayAuthenticator.GatewaySessionLeasing)? = nil
     ) -> any GatewayRosterSession {
         // F2: no compiled loopback default. A gateway row with no endpoint
         // gets the honest not-configured roster-session stub — every caller
@@ -654,7 +660,7 @@ enum FleetServiceGraph {
         }
         let transport = GatewayWebSocketTransport(
             baseURL: base,
-            authentication: makeAuthenticator(gateway: gateway, credentialStore: credentialStore, pinStore: pinStore),
+            authentication: makeAuthenticator(gateway: gateway, credentialStore: credentialStore, pinStore: pinStore, pairingSessionStore: pairingSessionStore),
             sessionFactory: sessionFactory,
             configuration: makeTransportConfiguration()
         )
@@ -703,9 +709,10 @@ enum FleetServiceGraph {
     nonisolated private static func makeAuthenticator(
         gateway: FleetGateway,
         credentialStore: any CredentialStoring,
-        pinStore: (any SynchronousPinStoring)? = nil
+        pinStore: (any SynchronousPinStoring)? = nil,
+        pairingSessionStore: (any GatewayAuthenticator.GatewaySessionLeasing)? = nil
     ) -> any AuthenticationProviding {
-        let sessionStore = FleetServiceGraph.sharedSessionStore
+        let sessionStore: any GatewayAuthenticator.GatewaySessionLeasing = pairingSessionStore ?? FleetServiceGraph.sharedSessionStore
         // F2: no compiled loopback default — a nil endpoint flows through as
         // a nil baseURL and the authenticator fails closed with
         // `.notConfigured` (never a phantom loopback mint).

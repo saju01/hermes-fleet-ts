@@ -32,6 +32,9 @@ public protocol GatewayRegistryManaging: Sendable {
     /// Remove a gateway (and any stored credential for it).
     func removeGateway(_ id: GatewayID) async throws
 
+    /// Roll back an owned new registration without deleting pre-existing TLS trust.
+    func removeGatewayPreservingTrust(_ id: GatewayID) async throws
+
     /// Store a credential for a gateway (Keychain-safe; never logged).
     func saveCredential(_ credential: GatewayCredential, for id: GatewayID) async throws
 
@@ -57,6 +60,9 @@ public protocol GatewayRegistryManaging: Sendable {
 }
 
 extension GatewayRegistryManaging {
+    public func removeGatewayPreservingTrust(_ id: GatewayID) async throws {
+        throw GatewayRegistryError.pinStoreFailed("registry cannot preserve existing trust")
+    }
     /// P0-4 default: no persistence wired (scripted fleet, test doubles) —
     /// restore nothing. Overridden by `GatewayRegistryService` when a
     /// `GatewayRecordStoring` is injected.

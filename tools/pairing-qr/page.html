@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="@@CSP@@"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fleet private pairing</title>@@STYLE@@</head>
+<body><main><h1>Fleet private pairing</h1>
+<p>Offline on this Mac · QR v2 · Embedded Tailscale</p>
+<p class="warning">This QR contains your existing Hermes credential. It is reusable, not one-time or device-bound, and has no generator-enforced expiry. Anyone who captures it can reuse that credential. Display privately; never share, screenshot, print, or send it to an assistant.</p>
+<form id="pairing" autocomplete="off">
+<label for="url">Existing gateway HTTPS origin (*.ts.net)</label><input id="url" type="text" maxlength="2048" spellcheck="false" autocapitalize="none" autocomplete="off" value="@@URL@@" placeholder="https://gateway.example.ts.net">
+<label for="name">Display name</label><input id="name" type="text" maxlength="128" autocomplete="off" value="@@NAME@@">
+<label for="strategy">Existing credential type</label><select id="strategy"><option value="usernamePassword">Hermes username and password</option><option value="sessionToken">Existing supported Hermes session token</option></select>
+<div id="password-fields"><label for="username">Existing Hermes username</label><input id="username" type="text" maxlength="256" spellcheck="false" autocapitalize="none" autocomplete="off" value="@@USERNAME@@">
+<label for="password">Existing Hermes password — enter locally only</label><input id="password" type="password" maxlength="1024" autocomplete="off" spellcheck="false"></div>
+<div id="token-fields" hidden><label for="token">Existing supported session token — enter locally only</label><input id="token" type="password" maxlength="1024" autocomplete="off" spellcheck="false"><p>Choose this only if the selected Hermes gateway already supports this exact session-token authentication. Do not enter an API key, cookie from another app, or Tailscale key.</p></div>
+<p>No new account, API key, Tailscale key, server, port, or service is created. Use a legitimate credential for the selected gateway. This tool cannot verify it offline or recover a password hash.</p>
+<label class="ack"><input id="ack" type="checkbox"> I understand this is a reusable credential QR and my display is private.</label>
+<button id="generate" type="button">Display private QR</button><button id="clear" type="button">Clear all &amp; hide QR</button>
+<p>The QR and form clear when you leave or hide this tab. Password/token inputs clear immediately after a display attempt. Clearing is not credential revocation.</p>
+</form><p id="status" role="status" aria-live="polite"></p><canvas id="qr" hidden aria-label="Private credential QR for Fleet; do not share"></canvas>
+<noscript>JavaScript is required for the bundled offline QR renderer.</noscript>
+</main>@@SCRIPTS@@</body></html>

@@ -7,9 +7,9 @@ import XCTest
 /// EMPTY registry. Under the first-run hydration gate the app presents the
 /// setup experience AT THE ROOT — before any tab UI. Proves: onboarding is
 /// the first meaningful surface; the copy button confirms visibly; the
-/// prompt preview renders the universal (v4) text with no environment
-/// assumptions; and the already-have-details hand-off routes into the REAL
+/// prompt preview renders the Fleet TS private-pairing mission; and the already-have-details hand-off routes into the REAL
 /// Add-Gateway form (URL/username/password entry).
+@MainActor
 final class F3OnboardingUITests: XCTestCase {
 
     override func setUpWithError() throws {
@@ -44,7 +44,7 @@ final class F3OnboardingUITests: XCTestCase {
         attachScreenshot(of: app, name: "f3-onboarding-root")
     }
 
-    func testCopyFlowConfirmsVisiblyAndPreviewIsUniversal() throws {
+    func testCopyFlowGuidesPrivatePairingAndPreviewIsFleetTS() throws {
         let app = launchEmptyFleet()
 
         let copy = app.buttons["fleet.onboarding.copy"]
@@ -52,7 +52,7 @@ final class F3OnboardingUITests: XCTestCase {
         copy.tap()
 
         // One tap copies — visible confirmation appears.
-        let confirmation = app.staticTexts["Copied — paste it in chat"]
+        let confirmation = app.staticTexts["Copied — open Hermes on Mac/private portal"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 10),
                       "copy must show a visible confirmation")
 
@@ -68,11 +68,18 @@ final class F3OnboardingUITests: XCTestCase {
             "full prompt text must render"
         )
 
-        // Neutrality on-device: the rendered prompt carries no environment
-        // assumptions (the stale v3 legs named Wi-Fi sideloading/TestFlight).
+        // Product-specific transport and pairing rules must be visible on-device.
+        // Do not bake in distribution-channel or private-deployment details.
         let promptText = app.descendants(matching: .any)
             .matching(identifier: "fleet.onboarding.prompt-text").firstMatch.label
-        for banned in ["sideload", "Wi-Fi", "TestFlight", "Mac", "tailnet", "Tailscale", "dogfood"] {
+        for required in ["Hermes Fleet TS", "Fleet-owned embedded Tailscale", "A reusable credential QR is reusable",
+                         "existing connected/selected Hermes gateway", "standard login support",
+                         "automatically fills Fleet's Authentication section",
+                         "waits for real Tailscale readiness", "automatically performs native Hermes login",
+                         "no additional auth action or credential entry"] {
+            XCTAssertTrue(promptText.contains(required), "Rendered prompt must require \(required)")
+        }
+        for banned in ["sideload", "Wi-Fi", "TestFlight", "dogfood", "Reply with exactly: the URL"] {
             XCTAssertFalse(promptText.contains(banned),
                            "rendered prompt must not contain environment assumption \"\(banned)\"")
         }
@@ -82,6 +89,23 @@ final class F3OnboardingUITests: XCTestCase {
                       "docs link must be present")
 
         attachScreenshot(of: app, name: "f3-onboarding-copy")
+    }
+
+    func testGuidanceRequiresPrivateDisplayAndSupportedPairing() throws {
+        let app = launchEmptyFleet()
+        XCTAssertTrue(app.buttons["fleet.onboarding.copy"].waitForExistence(timeout: 15))
+        let instructions = app.descendants(matching: .any)
+            .matching(identifier: "fleet.onboarding.instructions").firstMatch
+        XCTAssertTrue(instructions.exists)
+        XCTAssertTrue(instructions.label.contains("Mac/private portal"))
+        XCTAssertTrue(instructions.label.contains("selected gateway"))
+        XCTAssertTrue(instructions.label.contains("existing HTTPS endpoint"))
+        XCTAssertTrue(instructions.label.contains("existing token or username/password"))
+        XCTAssertTrue(instructions.label.contains("After Tailscale authorization, Hermes login is automatic"))
+        XCTAssertTrue(instructions.label.contains("Treat the reusable QR like its credential"))
+        XCTAssertTrue(instructions.label.contains("no new service or port"))
+        XCTAssertFalse(instructions.label.contains("single-use"))
+        XCTAssertFalse(instructions.label.contains("values to enter"))
     }
 
     func testOnboardingHandsOffToAddGatewayForm() throws {
