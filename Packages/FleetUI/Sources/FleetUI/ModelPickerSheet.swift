@@ -101,6 +101,9 @@ public struct ModelPickerSheet: View {
                 if let selected = model.selectedModel {
                     selectedBanner(selected)
                 }
+                if !model.availableEfforts.isEmpty {
+                    effortRow
+                }
                 ForEach(groupedByProvider, id: \.slug) { group in
                     Section {
                         ForEach(group.rows) { choice in
@@ -131,6 +134,44 @@ public struct ModelPickerSheet: View {
             }
             .padding(.vertical, FleetTheme.spacingSm)
         }
+    }
+
+    /// Thinking effort for new chats (sticky per-device; rides
+    /// `session.create {reasoning_effort}` as a level string, never a token
+    /// budget). Levels follow the model capabilities from model.options.
+    private var effortRow: some View {
+        VStack(alignment: .leading, spacing: FleetTheme.spacingXs) {
+            Text("Thinking")
+                .font(FleetTheme.microLabelFont)
+                .foregroundStyle(theme.textSecondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: FleetTheme.spacingXs) {
+                    effortButton(nil, label: "Default")
+                    ForEach(model.availableEfforts) { effortButton($0, label: $0.label) }
+                }
+            }
+        }
+        .padding(.horizontal, FleetTheme.spacingLg)
+        .padding(.top, FleetTheme.spacingSm)
+        .accessibilityIdentifier("model.picker.effort")
+    }
+
+    private func effortButton(_ effort: ReasoningEffort?, label: String) -> some View {
+        let selected = model.selectedEffort == effort
+        return Button {
+            model.selectEffort(effort)
+        } label: {
+            Text(label)
+                .font(FleetTheme.secondaryFont)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .foregroundStyle(selected ? theme.highlight : theme.textPrimary)
+                .background(theme.surface, in: Capsule())
+                .overlay(Capsule().stroke(selected ? theme.highlight : Color.clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("model.picker.effort.\(effort?.rawValue ?? "default")")
     }
 
     /// The sticky-pick banner shown at the top of the list.

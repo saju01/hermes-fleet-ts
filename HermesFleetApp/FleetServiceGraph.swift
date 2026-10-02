@@ -44,6 +44,23 @@ enum FleetServiceGraph {
         #endif
     }
 
+    /// Simple-mode gate. Users default to Simple. The DEBUG scripted
+    /// simulator falls back to Advanced unless `HERMES_FLEET_UI_MODE` pins a
+    /// mode: the pre-existing deterministic UI suites were written against
+    /// the four-tab shell and launch with no mode preference.
+    static func makeUIModeController() -> FleetUIModeController {
+        let env = ProcessInfo.processInfo.environment
+        if env["HERMES_FLEET_UI_MODE_RESET"] == "1" {
+            UserDefaults.standard.removeObject(forKey: FleetUIModeController.defaultsKey)
+        }
+        #if DEBUG && targetEnvironment(simulator)
+        let fallback: FleetUIMode = .advanced
+        #else
+        let fallback: FleetUIMode = .simple
+        #endif
+        return FleetUIModeController(environment: env, fallback: fallback)
+    }
+
     /// Builds the H1 app-lock controller.
     ///
     /// Provider + mode selection:

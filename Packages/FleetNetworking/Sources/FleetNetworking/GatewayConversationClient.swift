@@ -11,7 +11,7 @@ import FleetCore
 /// action — this is the MUTATING seam and is deliberately separate from the M4
 /// read-only `SessionHistoryProviding`: a read-only screen structurally cannot
 /// reach this type (the composition root decides which seam to hand a screen).
-public struct GatewayConversationClient: ConversationProviding {
+public struct GatewayConversationClient: ConversationProviding, ReasoningEffortCreating {
     /// The gateway this client is bound to.
     public let gatewayID: GatewayID
     private let transport: GatewayWebSocketTransport
@@ -42,6 +42,23 @@ public struct GatewayConversationClient: ConversationProviding {
         provider: String?,
         cols: Int?
     ) async throws -> ConversationSession {
+        try await createSessionWithEffort(
+            title: title, profile: profile, model: model, provider: provider,
+            reasoningEffort: nil, cols: cols)
+    }
+
+    /// `session.create` with an optional per-session `reasoning_effort`
+    /// (tui_gateway/contracts/sessions.py; a level STRING such as
+    /// "medium" or "none", never a token budget). Omitted when nil so the
+    /// session inherits the profile effort.
+    public func createSessionWithEffort(
+        title: String?,
+        profile: String?,
+        model: String?,
+        provider: String?,
+        reasoningEffort: ReasoningEffort?,
+        cols: Int?
+    ) async throws -> ConversationSession {
         // M9 fail-closed guard: an unsafe profile slug never reaches the
         // transport (path traversal into the gateway's profile namespace).
         if let profile, !RoutingGuard.isValidRouteComponent(profile) {
@@ -53,6 +70,7 @@ public struct GatewayConversationClient: ConversationProviding {
         if let profile { params["profile"] = .string(profile) }
         if let model { params["model"] = .string(model) }
         if let provider { params["provider"] = .string(provider) }
+        if let reasoningEffort { params["reasoning_effort"] = .string(reasoningEffort.rawValue) }
         if let cols { params["cols"] = .number(Double(cols)) }
         do {
             let result = try await transport.request(method: "session.create", params: .object(params))

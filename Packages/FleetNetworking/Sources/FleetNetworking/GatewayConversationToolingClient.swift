@@ -195,6 +195,7 @@ public struct GatewayConversationToolingClient: ConversationToolingProviding {
             let name = o["name"]?.stringValue ?? slug
             let isCurrentRow = o["is_current"]?.boolValue ?? false
             let models = o["models"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            let capabilities = o["capabilities"]?.objectValue ?? [:]
             for model in models where !model.isEmpty {
                 // "Current" needs BOTH the provider row to be current AND the
                 // payload's active model to match — an unconfigured-but-
@@ -202,7 +203,10 @@ public struct GatewayConversationToolingClient: ConversationToolingProviding {
                 let isCurrent = isCurrentRow && (currentProvider.isEmpty || slug == currentProvider)
                     && (currentModel.isEmpty ? false : model == currentModel)
                 choices.append(
-                    ModelChoice(model: model, provider: slug, providerName: name, isCurrent: isCurrent))
+                    ModelChoice(
+                        model: model, provider: slug, providerName: name, isCurrent: isCurrent,
+                        supportsReasoning: capabilities[model]?["reasoning"]?.boolValue,
+                        canDisableReasoning: capabilities[model]?["can_disable_reasoning"]?.boolValue))
             }
         }
         return choices

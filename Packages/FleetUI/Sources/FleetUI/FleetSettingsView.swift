@@ -12,6 +12,7 @@ public struct FleetSettingsView: View {
     private let environment: AppEnvironment?
     private let appearanceController: FleetAppearanceController
     private let themeController: FleetThemeController
+    private let modeController: FleetUIModeController?
 
     /// C2: presents the always-reachable agent setup prompt sheet.
     @State private var showingSetupPrompt = false
@@ -25,7 +26,9 @@ public struct FleetSettingsView: View {
     public init(controller: AppLockController,
                 environment: AppEnvironment? = nil,
                 appearanceController: FleetAppearanceController = FleetAppearanceController.shared,
-                themeController: FleetThemeController = FleetThemeController.shared) {
+                themeController: FleetThemeController = FleetThemeController.shared,
+                modeController: FleetUIModeController? = nil) {
+        self.modeController = modeController
         self.controller = controller
         self.environment = environment
         self.appearanceController = appearanceController
@@ -155,6 +158,25 @@ public struct FleetSettingsView: View {
             } footer: {
                 Text("Hermes Fleet connects directly to gateways you choose. Review the policy before pairing a gateway.")
                     .foregroundStyle(theme.textSecondary)
+            }
+            // Simple-mode gate (kept last so existing rows keep their
+            // positions).
+            if let modeController {
+                Section {
+                    Picker("Interface", selection: Binding(
+                        get: { modeController.mode },
+                        set: { modeController.setMode($0) }
+                    )) {
+                        ForEach(FleetUIMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("fleet.settings.ui-mode")
+                } header: {
+                    Text("Interface").foregroundStyle(theme.textSecondary)
+                } footer: {
+                    Text("Simple is one chat with a live browser view. Advanced opens the full Fleet, Chats, Bots and Gateways tabs.")
+                        .foregroundStyle(theme.textSecondary)
+                }
             }
         }
         .scrollContentBackground(.hidden)

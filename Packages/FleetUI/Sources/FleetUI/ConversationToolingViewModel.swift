@@ -25,6 +25,9 @@ public final class ConversationToolingViewModel {
     /// across launches; nil = "follow the profile default" (session.create
     /// with no model param — the gateway inherits).
     public private(set) var selectedModel: ModelChoice?
+    /// Sticky per-device thinking effort (nil = inherit the profile).
+    /// Rides `session.create {reasoning_effort}` only — never a config write.
+    public private(set) var selectedEffort: ReasoningEffort?
     /// True while model.options is in flight (picker loading state).
     public private(set) var isLoadingModels = false
     /// Fail-soft model list error (non-secret).
@@ -52,6 +55,7 @@ public final class ConversationToolingViewModel {
     /// Per-device sticky store key (gateway-scoped so each gateway's pick
     /// is independent — different gateways serve different providers).
     private let persistenceKey: String
+    private let effortKey: String
     private var boundSessionID: String?
 
     public init(
@@ -60,6 +64,10 @@ public final class ConversationToolingViewModel {
     ) {
         self.tooling = tooling
         self.persistenceKey = "fleet.modelpick.\(gatewayID.rawValue)"
+        self.effortKey = "fleet.effortpick.\(gatewayID.rawValue)"
+        if let raw = UserDefaults.standard.string(forKey: effortKey) {
+            self.selectedEffort = ReasoningEffort(rawValue: raw)
+        }
         // Restore the sticky pick (fail-soft: corrupt store → follow default).
         if let data = UserDefaults.standard.data(forKey: persistenceKey),
            let choice = try? JSONDecoder().decode(ModelChoice.self, from: data) {
@@ -101,6 +109,24 @@ public final class ConversationToolingViewModel {
         } else {
             UserDefaults.standard.removeObject(forKey: persistenceKey)
         }
+    }
+
+    /// Pick a thinking effort (sticky per-device; nil = profile default).
+    /// No wire call — rides the NEXT `session.create`.
+    public func selectEffort(_ effort: ReasoningEffort?) {
+        selectedEffort = effort
+        if let effort {
+            UserDefaults.standard.set(effort.rawValue, forKey: effortKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: effortKey)
+        }
+    }
+
+    /// Efforts offered for the current pick (capabilities of the selected,
+    /// else the gateway-current model; unknown → every level).
+    public var availableEfforts: [ReasoningEffort] {
+        let model = selectedModel ?? modelChoices?.first(where: \.isCurrent)
+        return model?.availableEfforts ?? ReasoningEffort.allCases
     }
 
     /// The params the conversation open should ride on `session.create`:
@@ -201,7 +227,7 @@ public final class ConversationToolingViewModel {
 
 extension ModelChoice: Codable {
     enum CodingKeys: String, CodingKey {
-        case model, provider, providerName, isCurrent
+        case model, provider, providerName, isCurrent, supportsReasoning, canDisableReasoning
     }
 
     public init(from decoder: Decoder) throws {
@@ -210,7 +236,10 @@ extension ModelChoice: Codable {
         let provider = try c.decode(String.self, forKey: .provider)
         let providerName = try c.decode(String.self, forKey: .providerName)
         let isCurrent = try c.decode(Bool.self, forKey: .isCurrent)
-        self.init(model: model, provider: provider, providerName: providerName, isCurrent: isCurrent)
+        self.init(
+            model: model, provider: provider, providerName: providerName, isCurrent: isCurrent,
+            supportsReasoning: try c.decodeIfPresent(Bool.self, forKey: .supportsReasoning),
+            canDisableReasoning: try c.decodeIfPresent(Bool.self, forKey: .canDisableReasoning))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -219,5 +248,7 @@ extension ModelChoice: Codable {
         try c.encode(provider, forKey: .provider)
         try c.encode(providerName, forKey: .providerName)
         try c.encode(isCurrent, forKey: .isCurrent)
+        try c.encodeIfPresent(supportsReasoning, forKey: .supportsReasoning)
+        try c.encodeIfPresent(canDisableReasoning, forKey: .canDisableReasoning)
     }
 }

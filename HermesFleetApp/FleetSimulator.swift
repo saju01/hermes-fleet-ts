@@ -5,6 +5,7 @@ import FleetNetworking
 import FleetSecurity
 import FleetPersistence
 import FleetUI
+import UIKit
 
 #if DEBUG && targetEnvironment(simulator)
 
@@ -864,7 +865,7 @@ private extension String {
 /// (message.start → deltas → message.complete) after each prompt.submit, a
 /// no-op replay (nothing to replay), and scripted history. Makes the U3
 /// Conversation canvas fully walkable in the simulator without a live gateway.
-private struct ScriptedConversationSession: ConversationSessionProviding, ApprovalsCapable, ConversationToolingCapable, AttachmentStagingCapable, ReactionCapable, SlashCommandCapable {
+private struct ScriptedConversationSession: ConversationSessionProviding, ApprovalsCapable, ConversationToolingCapable, AttachmentStagingCapable, ReactionCapable, SlashCommandCapable, BotDisplayCapable {
     let gatewayID: GatewayID
     private let client: ScriptedConversationClient
     /// R9-T1: scripted approvals seam (records respond/yolo calls so the
@@ -883,6 +884,8 @@ private struct ScriptedConversationSession: ConversationSessionProviding, Approv
     /// Issue #4: scripted Hermes skill discovery/completion/dispatch so the
     /// slash palette is walkable in simulator UI tests without a gateway.
     let slashCommandsBox: ScriptedSlashCommandBox
+    /// Simple mode: scripted Bot Desktop (synthetic RFB + in-memory lease).
+    let display: any BotDisplayProviding = ScriptedBotDisplay()
 
     init(gatewayID: GatewayID) {
         self.gatewayID = gatewayID
@@ -1244,6 +1247,14 @@ private final class ScriptedConversationClient: ConversationProviding, @unchecke
                     error: nil
                 ))
                 return
+            }
+            // Simple mode: a prompt mentioning the browser drives two
+            // scripted browser tool steps (one live browser card).
+            if text.localizedCaseInsensitiveContains("browser") {
+                streamBox.yield(.toolStart(sessionID: sessionID, toolID: "b1", name: "browser_navigate", context: "example.com", argsText: nil))
+                streamBox.yield(.toolComplete(sessionID: sessionID, toolID: "b1", name: "browser_navigate", summary: nil))
+                streamBox.yield(.toolStart(sessionID: sessionID, toolID: "b2", name: "browser_snapshot", context: "example.com", argsText: nil))
+                streamBox.yield(.toolComplete(sessionID: sessionID, toolID: "b2", name: "browser_snapshot", summary: nil))
             }
             streamBox.yield(.messageDelta(sessionID: sessionID, text: "Hello from the scripted fleet. ", rendered: nil))
             // D-2 fix (t_9ce36690): echo the PROMPT TEXT only — drop the
@@ -2780,3 +2791,105 @@ extension ScriptedRoomLinkEngine: RoomReplicateSink {
 }
 
 #endif
+
+// MARK: - Simple mode: scripted Bot Desktop (DEBUG simulator only)
+
+/// Deterministic Bot Desktop for the simulator: a synthetic RFB server
+/// stream (3.8 / None / 320x200 fixture frame) and an in-memory lease. Never
+/// a stand-in for a live gateway; it exists so the Simple-mode browser card
+/// and takeover viewer are walkable in UI tests.
+final class ScriptedBotDisplay: BotDisplayProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var holder: (DisplayLeaseHolder, String?) = (.agent, nil)
+    private var epoch = 0
+    private var minted = 0
+
+    private func lease() -> DisplayLease {
+        lock.lock(); defer { lock.unlock() }
+        return DisplayLease(holder: holder.0, viewerHash: holder.1.map(BotDisplayViewerHash.hash), epoch: epoch)
+    }
+
+    private func snapshot() -> DisplayStatusSnapshot {
+        DisplayStatusSnapshot(supported: true, installed: true, running: true,
+                              geometry: "320x200", browser: "chromium", lease: lease())
+    }
+
+    func status(profile: String?) async throws -> DisplayStatusSnapshot { snapshot() }
+
+    func thumbnail(profile: String?) async throws -> DisplayThumbnail {
+        if lease().holder == .human { return DisplayThumbnail(imageData: nil, suppressed: "human") }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 100)).image { ctx in
+            UIColor.systemTeal.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 160, height: 100))
+            UIColor.white.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 160, height: 14))
+        }
+        return DisplayThumbnail(imageData: image.jpegData(compressionQuality: 0.7), suppressed: nil)
+    }
+
+    func observe(profile: String?, viewerID: String?) async throws -> DisplayObservation {
+        let id: String = {
+            lock.lock(); defer { lock.unlock() }
+            if let viewerID { return viewerID }
+            minted += 1
+            return "scripted-viewer-\(minted)"
+        }()
+        return DisplayObservation(ticket: "scripted-ticket", path: "/api/display/ws", viewerID: id, status: snapshot())
+    }
+
+    func acquireLease(profile: String?, viewerID: String, reason: String?) async throws -> DisplayLease {
+        lock.withLock { holder = (.human, viewerID); epoch += 1 }
+        return lease()
+    }
+
+    func releaseLease(profile: String?, viewerID: String) async throws -> DisplayLease {
+        lock.withLock { holder = (.agent, nil); epoch += 1 }
+        return lease()
+    }
+
+    func openStream(_ observation: DisplayObservation) async throws -> any DisplayByteStream {
+        ScriptedRFBStream()
+    }
+}
+
+private final class ScriptedRFBStream: DisplayByteStream, @unchecked Sendable {
+    private let lock = NSLock()
+    private var chunks: [Data]
+    private var closed = false
+
+    init() {
+        let w = 320, h = 200
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = (y * w + x) * 4
+                if y < 24 { px[i] = 240; px[i + 1] = 240; px[i + 2] = 240 }          // address bar
+                else { px[i] = 200; px[i + 1] = 140; px[i + 2] = UInt8(40 + x / 4) } // page
+            }
+        }
+        chunks = [
+            RFBServerFixture.version,
+            RFBServerFixture.securityTypes([1]) + RFBServerFixture.securityResultOK(),
+            RFBServerFixture.serverInit(width: w, height: h, name: "scripted-bot-desktop"),
+            RFBServerFixture.framebufferUpdate([.raw(x: 0, y: 0, width: w, height: h, bgrx: px)]),
+            RFBServerFixture.framebufferUpdate([.copy(x: 0, y: 100, width: 160, height: 24, sourceX: 0, sourceY: 0)]),
+        ]
+    }
+
+    func send(_ data: Data) async throws {}
+
+    func receive() async throws -> Data {
+        while true {
+            let next: Data? = {
+                lock.lock(); defer { lock.unlock() }
+                if closed { return nil }
+                return chunks.isEmpty ? Data() : chunks.removeFirst()
+            }()
+            guard let next else { throw BotDisplayError.streamClosed(code: 1000) }
+            if !next.isEmpty { return next }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    func close() async {
+        lock.withLock { closed = true }
+    }
+}

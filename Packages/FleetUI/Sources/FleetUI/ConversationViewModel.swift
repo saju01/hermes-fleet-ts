@@ -519,6 +519,7 @@ public final class ConversationViewModel {
                         profile: route.profileSlug.rawValue,
                         model: modelParams.model,
                         provider: modelParams.provider,
+                        reasoningEffort: toolingViewModel?.selectedEffort,
                         cols: nil
                     )
                     guard isCurrent(token) else { return false }

@@ -27,15 +27,20 @@ public struct FleetTabView: View {
     @Environment(\.fleetTheme) private var theme
     private let environment: AppEnvironment
     private let lockController: AppLockController
+    private let modeController: FleetUIModeController?
     @State private var navigation = FleetNavigationState()
     @State private var showingSettings = false
     @State private var restored = false
     @State private var showingCommandCenter = false
     @State private var autoNavHandled = false
 
-    public init(environment: AppEnvironment, lockController: AppLockController) {
+    /// - Parameter modeController: Simple-mode gate. nil = always the tab
+    ///   shell (previews/tests that predate Simple mode).
+    public init(environment: AppEnvironment, lockController: AppLockController,
+                modeController: FleetUIModeController? = nil) {
         self.environment = environment
         self.lockController = lockController
+        self.modeController = modeController
     }
 
     public var body: some View {
@@ -60,13 +65,19 @@ public struct FleetTabView: View {
                 case .unconfigured:
                     FirstRunSetupView(environment: environment)
                 case .configured:
-                    tabShell
+                    if let modeController, modeController.mode == .simple {
+                        SimpleRootView(environment: environment, modeController: modeController) {
+                            showingSettings = true
+                        }
+                    } else {
+                        tabShell
+                    }
                 }
             }
         }
         .sheet(isPresented: $showingSettings) {
             NavigationStack {
-                FleetSettingsView(controller: lockController, environment: environment)
+                FleetSettingsView(controller: lockController, environment: environment, modeController: modeController)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Done") { showingSettings = false }

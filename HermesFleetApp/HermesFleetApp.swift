@@ -20,12 +20,13 @@ struct HermesFleetApp: App {
     // app root (nil = System — defer to the device setting).
     @State private var appearanceController = FleetAppearanceController.shared
     @State private var themeController = FleetThemeController.shared
+    @State private var modeController = FleetServiceGraph.makeUIModeController()
 
     var body: some Scene {
         WindowGroup {
             FleetThemeRoot(controller: themeController) {
                 ZStack {
-                    FleetTabView(environment: environment, lockController: lockController)
+                    FleetTabView(environment: environment, lockController: lockController, modeController: modeController)
                         .task {
                             // Authenticate before touching the registry,
                             // cache, or roster. Protected content must not

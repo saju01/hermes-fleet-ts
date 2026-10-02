@@ -61,9 +61,9 @@ public enum TransportError: Error, Sendable, Equatable, LocalizedError {
 /// and flushed seq-gated so replay never duplicates or reorders (spec §9/§10).
 public actor GatewayWebSocketTransport: HermesTransport {
     // MARK: configuration
-    private let baseURL: URL
+    let baseURL: URL
     private let authentication: any AuthenticationProviding
-    private let sessionFactory: any WebSocketSessionFactory
+    let sessionFactory: any WebSocketSessionFactory
     private let config: TransportConfiguration
 
     // MARK: observable state (nonisolated via lock box)

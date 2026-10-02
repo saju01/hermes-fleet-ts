@@ -51,13 +51,27 @@ public struct ModelChoice: Identifiable, Hashable, Sendable {
     /// Whether this is the gateway's currently-active model+provider
     /// (`is_current` on the provider row + the payload's `model`).
     public let isCurrent: Bool
+    /// `capabilities[model].reasoning` from `model.options` (nil = unknown).
+    public let supportsReasoning: Bool?
+    /// `capabilities[model].can_disable_reasoning` (nil = unknown).
+    public let canDisableReasoning: Bool?
 
-    public init(model: String, provider: String, providerName: String, isCurrent: Bool) {
+    public init(
+        model: String, provider: String, providerName: String, isCurrent: Bool,
+        supportsReasoning: Bool? = nil, canDisableReasoning: Bool? = nil
+    ) {
         self.id = "\(provider)/\(model)"
         self.model = model
         self.provider = provider
         self.providerName = providerName
         self.isCurrent = isCurrent
+        self.supportsReasoning = supportsReasoning
+        self.canDisableReasoning = canDisableReasoning
+    }
+
+    /// Thinking levels this model can take (see `ReasoningEffort.available`).
+    public var availableEfforts: [ReasoningEffort] {
+        ReasoningEffort.available(reasoning: supportsReasoning, canDisableReasoning: canDisableReasoning)
     }
 
     /// Short display form for the composer chip (last path segment when the
